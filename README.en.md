@@ -50,7 +50,9 @@ It's how it will appear in the mini logo at the front lower right of the activit
 
 If you activate **"Dynamic (Play/Pause)"** it will look like this:
 
-<img width="270" height="107" alt="imagen" src="https://github.com/user-attachments/assets/c42cc25a-0c45-47f5-b0cd-2749727a1c6e" /><img width="271" height="114" alt="imagen" src="https://github.com/user-attachments/assets/c42cc25a-0c45-47f5-b0cd-2749727a1c6e" />
+<img width="270" height="107" alt="imagen" src="https://github.com/user-attachments/assets/c42cc25a-0c45-47f5-b0cd-2749727a1c6e" /><img width="265" height="107" alt="imagen" src="https://github.com/user-attachments/assets/224c413e-14ba-4d95-81c9-524a90f172d8" />
+
+
 
 If you choose **"Logo Only"**, it will display that logo, ah... that characteristic AIMP logo:
 
