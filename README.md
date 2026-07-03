@@ -50,7 +50,9 @@ Es como va a salir en el mini logo al frente derecho inferior de la imagen de la
 
 Si activas **"Dinámico (Play/Pausa)"** saldrá así:
 
-<img width="270" height="107" alt="imagen" src="https://github.com/user-attachments/assets/c42cc25a-0c45-47f5-b0cd-2749727a1c6e" /><img width="271" height="114" alt="imagen" src="https://github.com/user-attachments/assets/c42cc25a-0c45-47f5-b0cd-2749727a1c6e" />
+<img width="270" height="107" alt="imagen" src="https://github.com/user-attachments/assets/c42cc25a-0c45-47f5-b0cd-2749727a1c6e" /><img width="265" height="107" alt="imagen" src="https://github.com/user-attachments/assets/87152bb1-9ad5-4ef5-88da-5f8dad192b34" />
+
+
 
 Si le das a **"Solo Logo"**, este mostrará ese logo, ah... ese logo tan característico de AIMP:
 
