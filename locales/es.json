@@ -38,5 +38,7 @@
     "unknown_track": "Pista Desconocida",
     "unknown_artist": "Artista Desconocido",
     "unknown_album": "Sencillo/Desconocido",
-    "by_artist": "de {artist}"
+    "by_artist": "de {artist}",
+    "menu_filters": "Filtros Inteligentes",
+    "opt_open_filters": "Abrir archivo filters.json"
 }
