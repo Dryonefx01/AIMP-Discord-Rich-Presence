@@ -38,5 +38,7 @@
     "unknown_track": "Unknown Track",
     "unknown_artist": "Unknown Artist",
     "unknown_album": "Unknown Single/Album",
-    "by_artist": "by {artist}"
+    "by_artist": "by {artist}",
+    "menu_filters": "Smart Filters / Auto-Disable",
+    "opt_open_filters": "Open filters.json"
 }
