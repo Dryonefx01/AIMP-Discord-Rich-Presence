@@ -1,4 +1,3 @@
-
 {
     "menu_startup": "Start with Windows",
     "menu_displayed_texts": "Displayed Texts",
@@ -14,6 +13,10 @@
     "menu_status_icon": "Status Icon",
     "menu_theme": "Theme",
     "menu_language": "Language",
+    "menu_filters": "Smart Filters / Auto-Disable",
+    "opt_open_filters": "Open filters.json",
+    "menu_auto_themes": "Auto Themes Rules",
+    "opt_open_auto_themes": "Edit auto_themes.json",
     "menu_exit": "Exit",
     "opt_show": "Show...",
     "opt_always": "Always",
@@ -24,6 +27,7 @@
     "opt_album": "Album",
     "opt_aimp": "AIMP",
     "opt_custom": "Custom (JSON)",
+    "opt_custom_auto": "Custom (Auto-Switch)",
     "opt_file": "From File",
     "opt_file_lastfm": "File then Last.fm",
     "opt_lastfm_file": "Last.fm then File",
@@ -38,10 +42,5 @@
     "unknown_track": "Unknown Track",
     "unknown_artist": "Unknown Artist",
     "unknown_album": "Unknown Single/Album",
-    "by_artist": "by {artist}",
-    "menu_filters": "Smart Filters / Auto-Disable",
-    "opt_open_filters": "Open filters.json",
-    "opt_custom_auto": "Custom (Auto-Switch)",
-    "menu_auto_themes": "Open auto_themes.json",
-    "opt_open_auto_themes": "Edit Auto Themes"
+    "by_artist": "by {artist}"
 }
