@@ -40,5 +40,8 @@
     "unknown_album": "Unknown Single/Album",
     "by_artist": "by {artist}",
     "menu_filters": "Smart Filters / Auto-Disable",
-    "opt_open_filters": "Open filters.json"
+    "opt_open_filters": "Open filters.json",
+    "opt_custom_auto": "Custom (Auto-Switch)",
+    "menu_auto_themes": "Open auto_themes.json",
+    "opt_open_auto_themes": "Edit Auto Themes"
 }
