@@ -72,10 +72,11 @@ DEFAULT_EN_JSON = {
     "menu_album_cover": "Album Cover",
     "menu_status_icon": "Status Icon",
     "menu_theme": "Theme",
+    "theme_auto_random": "Automatic (Random Theme)",
     "menu_language": "Language",
     "menu_filters": "Smart Filters / Auto-Disable",
     "opt_open_filters": "Open filters.json",
-    "menu_auto_themes": "Auto Themes Rules",
+    "menu_auto_themes": "Custom Theme Rules",
     "opt_open_auto_themes": "Edit auto_themes.json",
     "menu_exit": "Exit",
     "opt_show": "Show...",
@@ -88,7 +89,6 @@ DEFAULT_EN_JSON = {
     "opt_aimp": "AIMP",
     "opt_custom": "Custom (JSON)",
     "opt_custom_auto": "Custom (Auto-Switch)",
-    "opt_automatic_random": "Automatic (Random Theme)",
     "opt_file": "From File",
     "opt_file_lastfm": "File then Last.fm",
     "opt_lastfm_file": "Last.fm then File",
@@ -190,7 +190,24 @@ if is_first_run():
         winreg.CloseKey(key)
     except: pass
 
-# --- JSON SYSTEMS (SMART PARSER) ---
+# --- JSON SYSTEMS & DEFAULT DATA ---
+DEFAULT_FILTERS = {
+    "_instructions": "timeout_minutes: 0 to disable. time_range: HH:MM-HH:MM (24h format). blacklist: list of song titles or file paths.",
+    "timeout_minutes": 0, "time_range": "", "blacklist": []
+}
+
+DEFAULT_AUTO_THEMES = {
+    "_instructions": "fallback_theme is used when filters are inactive. Set timer_rotation_enabled to false to disable timer rotation.",
+    "fallback_theme": "Default (AIMP)",
+    "timer_rotation_enabled": True,
+    "file_rules": [
+        {"match": "C:\\Secret_Folder", "theme": "Default (AIMP)"}
+    ],
+    "timer_rotation": [
+        {"theme": "Default (AIMP)", "time": 3600}
+    ]
+}
+
 def load_json_file_safe(path, default_data):
     if not os.path.exists(path):
         try:
@@ -207,7 +224,6 @@ def load_json_file_safe(path, default_data):
         logger(f"Error parsing JSON {path}: {e}")
         return default_data
 
-# --- JSON DECLARATIONS ---
 path_themes_json = os.path.join(app_data_dir, "themes.json")
 path_custom_json = os.path.join(app_data_dir, "custom_texts.json")
 path_filters_json = os.path.join(app_data_dir, "filters.json")
@@ -230,25 +246,10 @@ def load_custom_texts():
     return load_json_file_safe(path_custom_json, default_data)
 
 def load_filters():
-    default_data = {
-        "_instructions": "timeout_minutes: 0 to disable. time_range: HH:MM-HH:MM (24h format). blacklist: list of song titles or file paths.",
-        "timeout_minutes": 0, "time_range": "", "blacklist": []
-    }
-    return load_json_file_safe(path_filters_json, default_data)
+    return load_json_file_safe(path_filters_json, DEFAULT_FILTERS)
 
 def load_auto_themes():
-    default_data = {
-        "_instructions": "fallback_theme is used when filters are inactive. Set timer_rotation_enabled to false to disable timer rotation.",
-        "fallback_theme": "Default (AIMP)",
-        "timer_rotation_enabled": True,
-        "file_rules": [
-            {"match": "C:\\Secret_Folder", "theme": "Default (AIMP)"}
-        ],
-        "timer_rotation": [
-            {"theme": "Default (AIMP)", "time": 3600}
-        ]
-    }
-    return load_json_file_safe(path_auto_themes_json, default_data)
+    return load_json_file_safe(path_auto_themes_json, DEFAULT_AUTO_THEMES)
 
 themes_list = load_themes_list()
 
@@ -344,12 +345,13 @@ http_session = requests.Session()
 http_session.headers.update({'user-agent': 'AimpDiscordBridge/6.0'})
 cache_covers_imgbb = {}
 
-def check_startup_registry():
+def is_startup_enabled():
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_STARTUP, 0, winreg.KEY_READ)
+        winreg.QueryValueEx(key, APP_NAME)
         winreg.CloseKey(key)
         return True
-    except WindowsError: return False
+    except: return False
 
 def load_config():
     config = {
@@ -390,7 +392,7 @@ def save_config():
     except: pass
 
 cfg = load_config()
-cfg_startup = check_startup_registry()
+cfg_startup = is_startup_enabled()
 cfg_show_pause = cfg['show_pause']
 cfg_show_timeline = cfg['show_timeline']
 cfg_cover_source = cfg['cover_source']
@@ -418,17 +420,20 @@ def get_config_state_tuple():
 # --- MENUS ---
 def toggle_startup(icon, item):
     global cfg_startup
-    cfg_startup = not cfg_startup
+    enabled = is_startup_enabled()
+    cfg_startup = not enabled
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_STARTUP, 0, winreg.KEY_SET_VALUE)
-        if cfg_startup:
-            ruta = f'"{sys.executable}"' if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
-            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, ruta)
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_STARTUP, 0, winreg.KEY_ALL_ACCESS)
+        if enabled:
+            winreg.DeleteValue(key, APP_NAME)
         else:
-            try: winreg.DeleteValue(key, APP_NAME)
-            except: pass
+            exe_path = sys.argv[0]
+            if not exe_path.endswith('.exe'):
+                exe_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
+            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, exe_path)
         winreg.CloseKey(key)
-    except: pass
+    except Exception as e:
+        logger(f"Startup toggle error: {e}")
 
 def set_radio(var_name, value):
     def setter(icon, item): 
@@ -485,7 +490,6 @@ def toggle_special_theme(theme_name):
     def toggler(icon, item):
         global cfg_theme_current, discord_connected, last_rpc_song, last_playback_state, last_resolved_theme
         if cfg_theme_current == theme_name:
-            # Toggle off returns to default theme
             cfg_theme_current = themes_list[0].get("name", "Default")
         else:
             cfg_theme_current = theme_name
@@ -495,8 +499,19 @@ def toggle_special_theme(theme_name):
         icon.menu = build_dynamic_menu()
     return toggler
 
-def open_file(path):
-    def opener(icon, item): os.startfile(path)
+def open_file(path, default_data_dict):
+    def opener(icon, item):
+        if not os.path.exists(path):
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(default_data_dict, f, indent=4, ensure_ascii=False)
+            except Exception as e:
+                logger(f"Error creating file {path}: {e}")
+                return
+        try:
+            os.startfile(path)
+        except Exception as e:
+            logger(f"Error opening file {path}: {e}")
     return opener
 
 def build_dynamic_menu():
@@ -514,16 +529,16 @@ def build_dynamic_menu():
     
     themes_menu_items.append(pystray.Menu.SEPARATOR)
     themes_menu_items.append(item(_('opt_custom_auto'), toggle_special_theme('__CUSTOM_AUTO__'), checked=check_theme_ui('__CUSTOM_AUTO__')))
-    themes_menu_items.append(item(_('opt_automatic_random'), toggle_special_theme('__AUTOMATIC__'), checked=check_theme_ui('__AUTOMATIC__')))
+    themes_menu_items.append(item(_('theme_auto_random'), toggle_special_theme('__AUTOMATIC__'), checked=check_theme_ui('__AUTOMATIC__')))
     themes_menu_items.append(pystray.Menu.SEPARATOR)
     themes_menu_items.append(item(_('menu_auto_themes'), pystray.Menu(
-        item(_('opt_open_auto_themes'), open_file(path_auto_themes_json))
+        item(_('opt_open_auto_themes'), open_file(path_auto_themes_json, DEFAULT_AUTO_THEMES))
     )))
     
     lang_menu_items = [item(name, set_radio('cfg_language', code), checked=check_radio('cfg_language', code), radio=True) for code, name in cached_locales.items()]
 
     return pystray.Menu(
-        item(_('menu_startup'), toggle_startup, checked=lambda i: cfg_startup),
+        item(_('menu_startup'), toggle_startup, checked=lambda item: is_startup_enabled()),
         item(_('menu_displayed_texts'), pystray.Menu(
             item(_('menu_main_text'), build_text_menu('cfg_text_name', 'cfg_show_name')),
             item(_('menu_top_line'), build_text_menu('cfg_text_details', 'cfg_show_details')),
@@ -552,7 +567,7 @@ def build_dynamic_menu():
             ))
         )),
         item(_('menu_filters'), pystray.Menu(
-            item(_('opt_open_filters'), open_file(path_filters_json))
+            item(_('opt_open_filters'), open_file(path_filters_json, DEFAULT_FILTERS))
         )),
         item(_('menu_theme'), pystray.Menu(*themes_menu_items)),
         item(_('menu_language'), pystray.Menu(*lang_menu_items)),
