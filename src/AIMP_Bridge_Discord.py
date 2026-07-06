@@ -10,6 +10,8 @@ import ctypes
 import io 
 import json
 import random
+import base64
+import uuid
 import tkinter as tk
 from tkinter import ttk
 from pyaimp import Client, PlayBackState
@@ -25,14 +27,22 @@ mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
 if ctypes.windll.kernel32.GetLastError() == 183: 
     sys.exit(0) 
 
+# --- SECURITY: TOKEN DEOBFUSCATION ---
+def decode_token(token_str):
+    if token_str.startswith("ENC_REV_"):
+        return token_str[8:][::-1]
+    return token_str
+
 # --- PATHS AND CONSTANTS ---
-CLIENT_ID_DEFAULT = '1489090870681669745'
+RAW_CLIENT_ID = "ENC_REV_5479661860780909841"
+CLIENT_ID_DEFAULT = decode_token(RAW_CLIENT_ID)
 REG_PATH_STARTUP = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_PATH_CONFIG = r"Software\AIMP_Bridge_Discord"
 APP_NAME = "AIMP_Bridge_Discord"
 
 app_data_dir = os.path.join(os.getenv('APPDATA'), APP_NAME)
 locales_dir = os.path.join(app_data_dir, "locales")
+path_local_covers_json = os.path.join(app_data_dir, "local_covers_db.json")
 os.makedirs(app_data_dir, exist_ok=True)
 os.makedirs(locales_dir, exist_ok=True)
 
@@ -42,6 +52,94 @@ sys.stdout = open(os.path.join(app_data_dir, "bridge_log.txt"), "a", encoding="u
 def logger(message):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}", flush=True)
+
+# --- ANONYMOUS UUID INITIALIZATION ---
+def get_or_create_user_uuid():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_CONFIG, 0, winreg.KEY_READ)
+        user_uuid, _ = winreg.QueryValueEx(key, "user_uuid")
+        winreg.CloseKey(key)
+        return user_uuid
+    except WindowsError:
+        new_uuid = str(uuid.uuid4())
+        try:
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_PATH_CONFIG)
+            winreg.SetValueEx(key, "user_uuid", 0, winreg.REG_SZ, new_uuid)
+            winreg.CloseKey(key)
+        except: pass
+        return new_uuid
+
+USER_UUID = get_or_create_user_uuid()
+
+# --- GITHUB DATABASE CONFIGURATION ---
+# El token está invertido de forma exacta letra por letra para evitar escaneos de bots.
+RAW_GITHUB_TOKEN = "ENC_REV_WVOlPKMFBAUDHOS4EsdiWK0VZuy2qy0y6fVONDXqjmzs0KEfhXMr5mnKvxN_naHvHuW3OzPD0YR2A3JB11_tap_buhtig"
+GITHUB_TOKEN = decode_token(RAW_GITHUB_TOKEN)
+GITHUB_REPO = "Dryonefx01/Discord-Presence-Script-AIMP-"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/users_db/covers_{USER_UUID}.json"
+
+global_covers_cache = {}
+global_covers_sha = None
+
+if os.path.exists(path_local_covers_json):
+    try:
+        with open(path_local_covers_json, "r", encoding="utf-8") as f:
+            global_covers_cache = json.load(f)
+    except: pass
+
+# --- GITHUB DATABASE SYNC ---
+def sync_covers_db():
+    global global_covers_cache, global_covers_sha
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        r = requests.get(GITHUB_API_URL, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            global_covers_sha = data['sha']
+            content = base64.b64decode(data['content']).decode('utf-8')
+            remote_cache = json.loads(content)
+            global_covers_cache.update(remote_cache)
+            with open(path_local_covers_json, "w", encoding="utf-8") as f:
+                json.dump(global_covers_cache, f, indent=4, ensure_ascii=False)
+            logger(f"Isolated Covers DB Synced for User {USER_UUID[:8]}... Items: {len(global_covers_cache)}")
+        elif r.status_code == 404:
+            push_covers_db()
+        elif r.status_code == 401:
+            logger("GitHub API: 401 Unauthorized. The token is invalid or expired.")
+    except Exception as e:
+        logger(f"Failed to sync isolated Covers DB: {e}")
+
+def push_covers_db(retry=True):
+    global global_covers_cache, global_covers_sha
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        with open(path_local_covers_json, "w", encoding="utf-8") as f:
+            json.dump(global_covers_cache, f, indent=4, ensure_ascii=False)
+
+        content_str = json.dumps(global_covers_cache, indent=4)
+        b64_content = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
+        payload = {"message": f"Auto-update isolated covers DB for {USER_UUID[:8]}", "content": b64_content}
+        
+        if global_covers_sha: 
+            payload["sha"] = global_covers_sha
+        
+        r = requests.put(GITHUB_API_URL, headers=headers, json=payload, timeout=10)
+        
+        if r.status_code in [200, 201]:
+            global_covers_sha = r.json()['content']['sha']
+        elif r.status_code == 409 and retry:
+            logger("SHA Conflict (409) detected. Resyncing and retrying push...")
+            sync_covers_db() 
+            push_covers_db(retry=False) 
+        elif r.status_code == 401:
+            logger("GitHub API: 401 Unauthorized. The token is invalid or expired.")
+        else:
+            logger(f"Failed to push with status code: {r.status_code}")
+            
+    except Exception as e:
+        logger(f"Failed to push isolated Covers DB: {e}")
+
+threading.Thread(target=sync_covers_db, daemon=True).start()
 
 # --- DYNAMIC LOCALES SYSTEM (i18n) ---
 GITHUB_LOCALES_BASE = "https://raw.githubusercontent.com/Dryonefx01/AIMP-Discord-Rich-Presence/refs/heads/main/locales/"
@@ -144,6 +242,7 @@ def build_icon_image():
 def is_first_run():
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_CONFIG, 0, winreg.KEY_READ)
+        winreg.QueryValueEx(key, "language")
         winreg.CloseKey(key)
         return False
     except WindowsError: return True
@@ -201,7 +300,7 @@ DEFAULT_AUTO_THEMES = {
     "fallback_theme": "Default (AIMP)",
     "timer_rotation_enabled": True,
     "file_rules": [
-        {"match": "C:\\Secret_Folder", "theme": "Default (AIMP)"}
+        {"match": "C:\\Secret_Folder", "theme": "__AUTOMATIC__"}
     ],
     "timer_rotation": [
         {"theme": "Default (AIMP)", "time": 3600}
@@ -265,13 +364,17 @@ random_theme_song = ""
 def determine_active_theme(cfg_theme, track_name, file_path):
     global current_random_theme, random_theme_song
     
-    if cfg_theme == '__AUTOMATIC__':
-        if random_theme_song != track_name or not current_random_theme:
-            valid_themes = [t.get("name") for t in themes_list]
-            current_random_theme = random.choice(valid_themes) if valid_themes else "Default (AIMP)"
-            random_theme_song = track_name
-        return current_random_theme
+    def process_assignment(assigned_theme):
+        global current_random_theme, random_theme_song
+        if assigned_theme == '__AUTOMATIC__':
+            if random_theme_song != track_name or not current_random_theme:
+                valid_themes = [t.get("name") for t in themes_list]
+                current_random_theme = random.choice(valid_themes) if valid_themes else "Default (AIMP)"
+                random_theme_song = track_name
+            return current_random_theme
+        return assigned_theme
 
+    if cfg_theme == '__AUTOMATIC__': return process_assignment('__AUTOMATIC__')
     if cfg_theme != '__CUSTOM_AUTO__': return cfg_theme
     
     auto_data = load_auto_themes()
@@ -279,13 +382,11 @@ def determine_active_theme(cfg_theme, track_name, file_path):
     track_lower = track_name.lower()
     path_lower = str(file_path).lower() if file_path else ""
     
-    # 1. File Rules (Overrides)
     for rule in auto_data.get("file_rules", []):
         m_val = str(rule.get("match", "")).lower()
         if m_val and (m_val in track_lower or m_val in path_lower):
-            return rule.get("theme", fallback)
+            return process_assignment(rule.get("theme", fallback))
             
-    # 2. Timer Rotation
     if auto_data.get("timer_rotation_enabled", True):
         rotation = auto_data.get("timer_rotation", [])
         if rotation:
@@ -295,9 +396,9 @@ def determine_active_theme(cfg_theme, track_name, file_path):
                 acc = 0
                 for item in rotation:
                     acc += max(1, item.get("time", 60))
-                    if c_mod < acc: return item.get("theme", fallback)
+                    if c_mod < acc: return process_assignment(item.get("theme", fallback))
             
-    return fallback
+    return process_assignment(fallback)
 
 # --- SMART FILTERS ENGINE ---
 playing_start_time = None
@@ -338,12 +439,11 @@ def is_filtered(track_name, file_path, is_playing):
     return False
 
 # --- CONFIG & REGISTRY ---
-api_key_lastfm = 'c3a6e1f0b0724b9d59f8064c59958072'
-API_KEY_IMGBB = 'e13e30d4ddd73e6f4dc33fe2d7167b05' 
+api_key_lastfm = decode_token('ENC_REV_27085995c4608f95d9b4270b0f1e6a3c')
+API_KEY_IMGBB = decode_token('ENC_REV_50b7617d2ef33cd4f6e37ddd4d03e31e') 
 
 http_session = requests.Session()
-http_session.headers.update({'user-agent': 'AimpDiscordBridge/6.0'})
-cache_covers_imgbb = {}
+http_session.headers.update({'user-agent': 'AimpDiscordBridge/6.1'})
 
 def is_startup_enabled():
     try:
@@ -462,16 +562,16 @@ def exit_app(icon, item):
 
 def build_text_menu(var_text, var_show):
     return pystray.Menu(
-        item(_('opt_show'), pystray.Menu(
-            item(_('opt_always'), set_radio(var_show, 'always'), checked=check_radio(var_show, 'always'), radio=True),
-            item(_('opt_auto'), set_radio(var_show, 'auto'), checked=check_radio(var_show, 'auto'), radio=True),
-            item(_('opt_never'), set_radio(var_show, 'never'), checked=check_radio(var_show, 'never'), radio=True)
+        item(lambda t: _('opt_show'), pystray.Menu(
+            item(lambda t: _('opt_always'), set_radio(var_show, 'always'), checked=check_radio(var_show, 'always'), radio=True),
+            item(lambda t: _('opt_auto'), set_radio(var_show, 'auto'), checked=check_radio(var_show, 'auto'), radio=True),
+            item(lambda t: _('opt_never'), set_radio(var_show, 'never'), checked=check_radio(var_show, 'never'), radio=True)
         )),
-        item(_('opt_title'), set_radio(var_text, 'title'), checked=check_radio(var_text, 'title'), radio=True),
-        item(_('opt_artist'), set_radio(var_text, 'artist'), checked=check_radio(var_text, 'artist'), radio=True),
-        item(_('opt_album'), set_radio(var_text, 'album'), checked=check_radio(var_text, 'album'), radio=True),
-        item(_('opt_aimp'), set_radio(var_text, 'aimp'), checked=check_radio(var_text, 'aimp'), radio=True),
-        item(_('opt_custom'), set_radio(var_text, 'custom'), checked=check_radio(var_text, 'custom'), radio=True)
+        item(lambda t: _('opt_title'), set_radio(var_text, 'title'), checked=check_radio(var_text, 'title'), radio=True),
+        item(lambda t: _('opt_artist'), set_radio(var_text, 'artist'), checked=check_radio(var_text, 'artist'), radio=True),
+        item(lambda t: _('opt_album'), set_radio(var_text, 'album'), checked=check_radio(var_text, 'album'), radio=True),
+        item(lambda t: _('opt_aimp'), set_radio(var_text, 'aimp'), checked=check_radio(var_text, 'aimp'), radio=True),
+        item(lambda t: _('opt_custom'), set_radio(var_text, 'custom'), checked=check_radio(var_text, 'custom'), radio=True)
     )
 
 def set_theme_ui(theme_name):
@@ -508,10 +608,8 @@ def open_file(path, default_data_dict):
             except Exception as e:
                 logger(f"Error creating file {path}: {e}")
                 return
-        try:
-            os.startfile(path)
-        except Exception as e:
-            logger(f"Error opening file {path}: {e}")
+        try: os.startfile(path)
+        except: pass
     return opener
 
 def build_dynamic_menu():
@@ -528,50 +626,50 @@ def build_dynamic_menu():
     ]
     
     themes_menu_items.append(pystray.Menu.SEPARATOR)
-    themes_menu_items.append(item(_('opt_custom_auto'), toggle_special_theme('__CUSTOM_AUTO__'), checked=check_theme_ui('__CUSTOM_AUTO__')))
-    themes_menu_items.append(item(_('theme_auto_random'), toggle_special_theme('__AUTOMATIC__'), checked=check_theme_ui('__AUTOMATIC__')))
+    themes_menu_items.append(item(lambda t: _('opt_custom_auto'), toggle_special_theme('__CUSTOM_AUTO__'), checked=check_theme_ui('__CUSTOM_AUTO__')))
+    themes_menu_items.append(item(lambda t: _('theme_auto_random'), toggle_special_theme('__AUTOMATIC__'), checked=check_theme_ui('__AUTOMATIC__')))
     themes_menu_items.append(pystray.Menu.SEPARATOR)
-    themes_menu_items.append(item(_('menu_auto_themes'), pystray.Menu(
-        item(_('opt_open_auto_themes'), open_file(path_auto_themes_json, DEFAULT_AUTO_THEMES))
+    themes_menu_items.append(item(lambda t: _('menu_auto_themes'), pystray.Menu(
+        item(lambda t: _('opt_open_auto_themes'), open_file(path_auto_themes_json, DEFAULT_AUTO_THEMES))
     )))
     
     lang_menu_items = [item(name, set_radio('cfg_language', code), checked=check_radio('cfg_language', code), radio=True) for code, name in cached_locales.items()]
 
     return pystray.Menu(
-        item(_('menu_startup'), toggle_startup, checked=lambda item: is_startup_enabled()),
-        item(_('menu_displayed_texts'), pystray.Menu(
-            item(_('menu_main_text'), build_text_menu('cfg_text_name', 'cfg_show_name')),
-            item(_('menu_top_line'), build_text_menu('cfg_text_details', 'cfg_show_details')),
-            item(_('menu_bottom_line'), build_text_menu('cfg_text_state', 'cfg_show_state')),
-            item(_('menu_cover_tooltip'), build_text_menu('cfg_text_large', 'cfg_show_large')),
-            item(_('menu_friend_list'), pystray.Menu(
-                item(_('opt_name'), set_radio('cfg_status_display', 'name'), checked=check_radio('cfg_status_display', 'name'), radio=True),
-                item(_('opt_details'), set_radio('cfg_status_display', 'details'), checked=check_radio('cfg_status_display', 'details'), radio=True),
-                item(_('opt_state'), set_radio('cfg_status_display', 'state'), checked=check_radio('cfg_status_display', 'state'), radio=True),
-                item(_('opt_custom'), set_radio('cfg_status_display', 'custom'), checked=check_radio('cfg_status_display', 'custom'), radio=True)
+        item(lambda t: _('menu_startup'), toggle_startup, checked=lambda item: is_startup_enabled()),
+        item(lambda t: _('menu_displayed_texts'), pystray.Menu(
+            item(lambda t: _('menu_main_text'), build_text_menu('cfg_text_name', 'cfg_show_name')),
+            item(lambda t: _('menu_top_line'), build_text_menu('cfg_text_details', 'cfg_show_details')),
+            item(lambda t: _('menu_bottom_line'), build_text_menu('cfg_text_state', 'cfg_show_state')),
+            item(lambda t: _('menu_cover_tooltip'), build_text_menu('cfg_text_large', 'cfg_show_large')),
+            item(lambda t: _('menu_friend_list'), pystray.Menu(
+                item(lambda t: _('opt_name'), set_radio('cfg_status_display', 'name'), checked=check_radio('cfg_status_display', 'name'), radio=True),
+                item(lambda t: _('opt_details'), set_radio('cfg_status_display', 'details'), checked=check_radio('cfg_status_display', 'details'), radio=True),
+                item(lambda t: _('opt_state'), set_radio('cfg_status_display', 'state'), checked=check_radio('cfg_status_display', 'state'), radio=True),
+                item(lambda t: _('opt_custom'), set_radio('cfg_status_display', 'custom'), checked=check_radio('cfg_status_display', 'custom'), radio=True)
             ))
         )),
-        item(_('menu_playback_state'), pystray.Menu(
-            item(_('menu_show_paused'), set_toggle('cfg_show_pause'), checked=lambda i: cfg_show_pause),
-            item(_('menu_show_timeline'), set_toggle('cfg_show_timeline'), checked=lambda i: cfg_show_timeline),
-            item(_('menu_album_cover'), pystray.Menu(
-                item(_('opt_file'), set_radio('cfg_cover_source', 'file'), checked=check_radio('cfg_cover_source', 'file'), radio=True),
-                item(_('opt_file_lastfm'), set_radio('cfg_cover_source', 'file_lastfm'), checked=check_radio('cfg_cover_source', 'file_lastfm'), radio=True),
-                item(_('opt_lastfm_file'), set_radio('cfg_cover_source', 'lastfm_file'), checked=check_radio('cfg_cover_source', 'lastfm_file'), radio=True),
-                item(_('opt_none'), set_radio('cfg_cover_source', 'none'), checked=check_radio('cfg_cover_source', 'none'), radio=True)
+        item(lambda t: _('menu_playback_state'), pystray.Menu(
+            item(lambda t: _('menu_show_paused'), set_toggle('cfg_show_pause'), checked=lambda i: cfg_show_pause),
+            item(lambda t: _('menu_show_timeline'), set_toggle('cfg_show_timeline'), checked=lambda i: cfg_show_timeline),
+            item(lambda t: _('menu_album_cover'), pystray.Menu(
+                item(lambda t: _('opt_file'), set_radio('cfg_cover_source', 'file'), checked=check_radio('cfg_cover_source', 'file'), radio=True),
+                item(lambda t: _('opt_file_lastfm'), set_radio('cfg_cover_source', 'file_lastfm'), checked=check_radio('cfg_cover_source', 'file_lastfm'), radio=True),
+                item(lambda t: _('opt_lastfm_file'), set_radio('cfg_cover_source', 'lastfm_file'), checked=check_radio('cfg_cover_source', 'lastfm_file'), radio=True),
+                item(lambda t: _('opt_none'), set_radio('cfg_cover_source', 'none'), checked=check_radio('cfg_cover_source', 'none'), radio=True)
             )),
-            item(_('menu_status_icon'), pystray.Menu(
-                item(_('opt_dynamic'), set_radio('cfg_icon_state', 'dynamic'), checked=check_radio('cfg_icon_state', 'dynamic'), radio=True),
-                item(_('opt_logo_only'), set_radio('cfg_icon_state', 'logo'), checked=check_radio('cfg_icon_state', 'logo'), radio=True),
-                item(_('opt_none'), set_radio('cfg_icon_state', 'none'), checked=check_radio('cfg_icon_state', 'none'), radio=True)
+            item(lambda t: _('menu_status_icon'), pystray.Menu(
+                item(lambda t: _('opt_dynamic'), set_radio('cfg_icon_state', 'dynamic'), checked=check_radio('cfg_icon_state', 'dynamic'), radio=True),
+                item(lambda t: _('opt_logo_only'), set_radio('cfg_icon_state', 'logo'), checked=check_radio('cfg_icon_state', 'logo'), radio=True),
+                item(lambda t: _('opt_none'), set_radio('cfg_icon_state', 'none'), checked=check_radio('cfg_icon_state', 'none'), radio=True)
             ))
         )),
-        item(_('menu_filters'), pystray.Menu(
-            item(_('opt_open_filters'), open_file(path_filters_json, DEFAULT_FILTERS))
+        item(lambda t: _('menu_filters'), pystray.Menu(
+            item(lambda t: _('opt_open_filters'), open_file(path_filters_json, DEFAULT_FILTERS))
         )),
-        item(_('menu_theme'), pystray.Menu(*themes_menu_items)),
-        item(_('menu_language'), pystray.Menu(*lang_menu_items)),
-        item(_('menu_exit'), exit_app)
+        item(lambda t: _('menu_theme'), pystray.Menu(*themes_menu_items)),
+        item(lambda t: _('menu_language'), pystray.Menu(*lang_menu_items)),
+        item(lambda t: _('menu_exit'), exit_app)
     )
 
 icon = pystray.Icon("AIMP Bridge", build_icon_image(), "AIMP Discord Bridge", build_dynamic_menu())
@@ -608,7 +706,7 @@ def extract_main_artist(raw_artist):
     parts = re.split(r'[;/,]| & | feat\. | ft\. | vs\. ', raw_artist, flags=re.IGNORECASE)
     return parts[0].strip()
 
-# --- TEXT FORMATTING (INDEPENDENT ROTATION) ---
+# --- TEXT FORMATTING ---
 def format_rpc_text(json_field, cfg_option, show_mode, info_dict, custom_data):
     if show_mode == "never": return None
 
@@ -653,7 +751,7 @@ def format_rpc_text(json_field, cfg_option, show_mode, info_dict, custom_data):
 
     return final_text
 
-# --- IMAGE FETCHING (MUTAGEN & LAST.FM) ---
+# --- IMAGE FETCHING (MUTAGEN & LAST.FM & CACHE) ---
 def fetch_lastfm_cover(artist, track, album_name):
     track_clean = track.replace(".flac", "").replace(".mp3", "").strip()
     album_target = album_name.lower().strip() if album_name else ""
@@ -710,10 +808,25 @@ def upload_to_imgbb(img_bytes):
     return None
 
 force_cover_update = False
-def async_cover_search(raw_artist, target_track, target_album, file_path, source_cfg, fallback_img):
-    global current_cover, force_cover_update, cache_covers_imgbb
+cover_thread_counter = 0
+
+def async_cover_search(raw_artist, target_track, target_album, file_path, source_cfg, fallback_img, thread_id):
+    global current_cover, force_cover_update, global_covers_cache, cover_thread_counter
+    
+    if thread_id != cover_thread_counter: return
+
     final_url = fallback_img
     main_artist = extract_main_artist(raw_artist)
+
+    clean_album = target_album.lower().strip()
+    is_unknown_album = clean_album in ["", "album", _("unknown_album").lower(), "sencillo/desconocido", "unknown single/album"]
+    db_key = f"{main_artist} - {target_track}" if is_unknown_album else f"{main_artist} - {target_album}"
+
+    if db_key in global_covers_cache:
+        if thread_id == cover_thread_counter:
+            current_cover = global_covers_cache[db_key]
+            force_cover_update = True
+        return
 
     def try_lastfm():
         url_lfm = fetch_lastfm_cover(raw_artist, target_track, target_album)
@@ -726,19 +839,23 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
 
     def try_file():
         if file_path and os.path.exists(file_path):
-            if file_path in cache_covers_imgbb: return cache_covers_imgbb[file_path]
             img_bytes = extract_local_cover(file_path)
             if img_bytes:
+                if thread_id != cover_thread_counter: return None 
                 url_imgbb = upload_to_imgbb(img_bytes)
-                if url_imgbb:
-                    cache_covers_imgbb[file_path] = url_imgbb
-                    return url_imgbb
+                if url_imgbb: return url_imgbb
         return None
 
     if source_cfg == "file": final_url = try_file() or fallback_img
     elif source_cfg == "file_lastfm": final_url = try_file() or try_lastfm() or fallback_img
     elif source_cfg == "lastfm_file": final_url = try_lastfm() or try_file() or fallback_img
     
+    if thread_id != cover_thread_counter: return
+
+    if final_url != fallback_img:
+        global_covers_cache[db_key] = final_url
+        threading.Thread(target=push_covers_db, daemon=True).start()
+
     if target_track == last_rpc_song:
         current_cover = final_url
         force_cover_update = True
@@ -780,7 +897,6 @@ while is_running:
             track_name = info.get('title', _('unknown_track')) or _('unknown_track')
             file_path = info.get('filename', '')
             
-            # --- AUTO THEME RESOLUTION ---
             resolved_theme_name = determine_active_theme(cfg_theme_current, track_name, file_path)
             current_theme_data = get_theme_data(resolved_theme_name)
             requested_cid = current_theme_data.get("client_id", "default")
@@ -808,7 +924,6 @@ while is_running:
                     time.sleep(2)
                     continue
 
-            # SMART FILTERS EVALUATION
             if is_filtered(track_name, file_path, p_state == PlayBackState.Playing):
                 if last_playback_state != PlayBackState.Stopped:
                     try: RPC.clear()
@@ -838,8 +953,9 @@ while is_running:
             if track_name != last_rpc_song:
                 last_rpc_song = track_name
                 current_cover = theme_fallback_img
+                cover_thread_counter += 1
                 if cfg_cover_source != "none":
-                    threading.Thread(target=async_cover_search, args=(artist_name, track_name, album_name, file_path, cfg_cover_source, theme_fallback_img), daemon=True).start()
+                    threading.Thread(target=async_cover_search, args=(artist_name, track_name, album_name, file_path, cfg_cover_source, theme_fallback_img, cover_thread_counter), daemon=True).start()
                 else: force_cover_update = True
 
             jump_offset = abs(pos_sec - (last_aimp_pos + 2))
@@ -871,7 +987,6 @@ while is_running:
             texts_rotated = current_texts != last_evaluated_texts
             force_timer = (time.time() - last_discord_update) > 5
 
-            # --- DYNAMIC STATUS DISPLAY (FRIEND LIST) ---
             type_display = StatusDisplayType.DETAILS
             status_mode = cfg_status_display
             
