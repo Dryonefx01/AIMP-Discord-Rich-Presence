@@ -72,7 +72,6 @@ def get_or_create_user_uuid():
 USER_UUID = get_or_create_user_uuid()
 
 # --- GITHUB DATABASE CONFIGURATION ---
-# El token está invertido de forma exacta letra por letra para evitar escaneos de bots.
 RAW_GITHUB_TOKEN = "ENC_REV_WVOlPKMFBAUDHOS4EsdiWK0VZuy2qy0y6fVONDXqjmzs0KEfhXMr5mnKvxN_naHvHuW3OzPD0YR2A3JB11_tap_buhtig"
 GITHUB_TOKEN = decode_token(RAW_GITHUB_TOKEN)
 GITHUB_REPO = "Dryonefx01/Discord-Presence-Script-AIMP-"
@@ -689,7 +688,7 @@ def connect_discord_core(cid, max_retries=3):
         try:
             rpc.connect()
             return rpc
-        except: time.sleep(2)
+        except: time.sleep(0.5)
     return None
 
 def connect_discord_safe(requested_cid):
@@ -823,10 +822,31 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
     db_key = f"{main_artist} - {target_track}" if is_unknown_album else f"{main_artist} - {target_album}"
 
     if db_key in global_covers_cache:
+        cached_url = global_covers_cache[db_key]
+        
+        # OPTIMIZACIÓN: Carga "Optimista" (Eager Loading)
+        # Asumimos que el link está vivo y se lo mandamos a Discord AL INSTANTE
         if thread_id == cover_thread_counter:
-            current_cover = global_covers_cache[db_key]
+            current_cover = cached_url
             force_cover_update = True
-        return
+            
+        # AHORA verificamos en segundo plano si el link realmente murió
+        link_dead = False
+        try:
+            test_resp = http_session.head(cached_url, timeout=2.5)
+            if test_resp.status_code == 404:
+                link_dead = True
+        except:
+            pass 
+            
+        if not link_dead:
+            # Si el link está bien, terminamos acá. Velocidad máxima.
+            return
+        else:
+            # Si estaba muerto, lo borramos y dejamos que el código de abajo 
+            # lo vuelva a subir a ImgBB y actualice Discord de nuevo automáticamente.
+            logger(f"Expired link detected for '{db_key}'. Removing from DB to re-upload.")
+            del global_covers_cache[db_key]
 
     def try_lastfm():
         url_lfm = fetch_lastfm_cover(raw_artist, target_track, target_album)
@@ -921,7 +941,7 @@ while is_running:
                     last_discord_song = ""
                     current_cover = current_theme_data.get("large_image", "logo")
                 else:
-                    time.sleep(2)
+                    time.sleep(0.5)
                     continue
 
             if is_filtered(track_name, file_path, p_state == PlayBackState.Playing):
@@ -930,7 +950,7 @@ while is_running:
                     except: pass
                     last_playback_state = PlayBackState.Stopped
                     last_discord_song = ""
-                time.sleep(2)
+                time.sleep(0.5)
                 continue
 
             if p_state == PlayBackState.Paused and not cfg_show_pause:
@@ -940,7 +960,7 @@ while is_running:
                     last_playback_state = PlayBackState.Stopped
                     last_discord_song = "" 
                 last_config_state = current_config_state
-                time.sleep(2)
+                time.sleep(0.5)
                 continue
 
             album_name = info.get('album', _('unknown_album')) or _('unknown_album')
@@ -1066,7 +1086,7 @@ while is_running:
         try: RPC.clear()
         except: pass
     
-    time.sleep(2)
+    time.sleep(0.5)
 
 if RPC:
     try: RPC.clear(); RPC.close()
