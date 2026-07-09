@@ -76,15 +76,46 @@ RAW_GITHUB_TOKEN = "ENC_REV_WVOlPKMFBAUDHOS4EsdiWK0VZuy2qy0y6fVONDXqjmzs0KEfhXMr
 GITHUB_TOKEN = decode_token(RAW_GITHUB_TOKEN)
 GITHUB_REPO = "Dryonefx01/Discord-Presence-Script-AIMP-"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/users_db/covers_{USER_UUID}.json"
+GITHUB_KEYS_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/keys/imgbb.json"
 
 global_covers_cache = {}
 global_covers_sha = None
+
+# Lista de reserva inicial (se sobreescribirá con lo que descargue de GitHub)
+imgbb_api_keys = [decode_token('ENC_REV_50b7617d2ef33cd4f6e37ddd4d03e31e')]
 
 if os.path.exists(path_local_covers_json):
     try:
         with open(path_local_covers_json, "r", encoding="utf-8") as f:
             global_covers_cache = json.load(f)
     except: pass
+
+# --- IMGBB LOAD BALANCER (ANTI-BAN SYSTEM) ---
+def fetch_imgbb_keys():
+    global imgbb_api_keys
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        r = requests.get(GITHUB_KEYS_API_URL, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            content = base64.b64decode(data['content']).decode('utf-8')
+            keys_data = json.loads(content)
+            if "keys" in keys_data and isinstance(keys_data["keys"], list) and len(keys_data["keys"]) > 0:
+                imgbb_api_keys = keys_data["keys"]
+                logger(f"Loaded {len(imgbb_api_keys)} ImgBB API keys from GitHub pool.")
+        elif r.status_code == 404:
+            # Si el archivo no existe, crea una plantilla en GitHub para que el usuario la llene manualmente
+            initial_data = {
+                "_instructions": "Agrega tus API keys de ImgBB dentro de la lista 'keys' separadas por comas.",
+                "keys": [imgbb_api_keys[0], "AGREGA_TU_SEGUNDA_API_KEY_AQUI", "AGREGA_TU_TERCERA_API_KEY_AQUI"]
+            }
+            content_str = json.dumps(initial_data, indent=4)
+            b64_content = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
+            payload = {"message": "Create ImgBB keys pool", "content": b64_content}
+            requests.put(GITHUB_KEYS_API_URL, headers=headers, json=payload, timeout=10)
+            logger("Created keys/imgbb.json pool in GitHub.")
+    except Exception as e:
+        logger(f"Failed to fetch ImgBB keys: {e}")
 
 # --- GITHUB DATABASE SYNC ---
 def sync_covers_db():
@@ -138,7 +169,9 @@ def push_covers_db(retry=True):
     except Exception as e:
         logger(f"Failed to push isolated Covers DB: {e}")
 
+# Iniciar ambos hilos al arrancar
 threading.Thread(target=sync_covers_db, daemon=True).start()
+threading.Thread(target=fetch_imgbb_keys, daemon=True).start()
 
 # --- DYNAMIC LOCALES SYSTEM (i18n) ---
 GITHUB_LOCALES_BASE = "https://raw.githubusercontent.com/Dryonefx01/AIMP-Discord-Rich-Presence/refs/heads/main/locales/"
@@ -439,7 +472,6 @@ def is_filtered(track_name, file_path, is_playing):
 
 # --- CONFIG & REGISTRY ---
 api_key_lastfm = decode_token('ENC_REV_27085995c4608f95d9b4270b0f1e6a3c')
-API_KEY_IMGBB = decode_token('ENC_REV_50b7617d2ef33cd4f6e37ddd4d03e31e') 
 
 http_session = requests.Session()
 http_session.headers.update({'user-agent': 'AimpDiscordBridge/6.1'})
@@ -801,9 +833,18 @@ def upload_to_imgbb(img_bytes):
         img.thumbnail((512, 512), Image.Resampling.LANCZOS) 
         output = io.BytesIO()
         img.save(output, format='JPEG', quality=85)
-        response = http_session.post("https://api.imgbb.com/1/upload", data={"key": API_KEY_IMGBB, "expiration": 604800}, files={"image": ("cover.jpg", output.getvalue(), "image/jpeg")}, timeout=10)
-        if response.json().get("success"): return response.json()["data"]["url"]
-    except: pass
+        
+        # Elegir una API key aleatoria del pool descargado de GitHub
+        selected_key = random.choice(imgbb_api_keys)
+        
+        response = http_session.post("https://api.imgbb.com/1/upload", data={"key": selected_key, "expiration": 604800}, files={"image": ("cover.jpg", output.getvalue(), "image/jpeg")}, timeout=10)
+        
+        if response.status_code == 200 and response.json().get("success"): 
+            return response.json()["data"]["url"]
+        else:
+            logger(f"ImgBB upload error with key {selected_key[:4]}... -> Code: {response.status_code}")
+    except Exception as e: 
+        logger(f"ImgBB exception: {e}")
     return None
 
 force_cover_update = False
@@ -824,13 +865,10 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
     if db_key in global_covers_cache:
         cached_url = global_covers_cache[db_key]
         
-        # OPTIMIZACIÓN: Carga "Optimista" (Eager Loading)
-        # Asumimos que el link está vivo y se lo mandamos a Discord AL INSTANTE
         if thread_id == cover_thread_counter:
             current_cover = cached_url
             force_cover_update = True
             
-        # AHORA verificamos en segundo plano si el link realmente murió
         link_dead = False
         try:
             test_resp = http_session.head(cached_url, timeout=2.5)
@@ -840,11 +878,8 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
             pass 
             
         if not link_dead:
-            # Si el link está bien, terminamos acá. Velocidad máxima.
             return
         else:
-            # Si estaba muerto, lo borramos y dejamos que el código de abajo 
-            # lo vuelva a subir a ImgBB y actualice Discord de nuevo automáticamente.
             logger(f"Expired link detected for '{db_key}'. Removing from DB to re-upload.")
             del global_covers_cache[db_key]
 
@@ -898,6 +933,10 @@ current_cover = "logo"
 last_discord_update = time.time() 
 last_evaluated_texts = ("", "", "", "")
 last_config_state = get_config_state_tuple()
+
+# VARIABLES PARA EL FIX DE LA LÍNEA DE TIEMPO
+last_v_start = None
+last_v_end = None
 
 while is_running:
     current_config_state = get_config_state_tuple()
@@ -978,16 +1017,36 @@ while is_running:
                     threading.Thread(target=async_cover_search, args=(artist_name, track_name, album_name, file_path, cfg_cover_source, theme_fallback_img, cover_thread_counter), daemon=True).start()
                 else: force_cover_update = True
 
-            jump_offset = abs(pos_sec - (last_aimp_pos + 2))
-            did_seek = jump_offset > 3 
-
+            # --- FIX: CÁLCULO ESTABLE DE LÍNEA DE TIEMPO Y PREVENCIÓN DE CARRERAS ---
             if p_state == PlayBackState.Playing:
-                v_start = int(time.time()) - pos_sec
-                v_end = v_start + duration_sec
+                # Si cambió la canción pero la posición reportada sigue siendo alta, es el residuo
+                # de la canción anterior que AIMP no limpió a tiempo en su API. Lo forzamos a 0.
+                if track_name != last_discord_song and last_discord_song != "" and pos_sec > 3:
+                    pos_sec = 0
+
+                # Doble seguridad para evitar que la posición supere la duración máxima
+                if duration_sec > 0 and pos_sec > duration_sec:
+                    pos_sec = duration_sec
+
+                current_v_start = int(time.time()) - pos_sec
+                current_v_end = current_v_start + duration_sec
+                
+                # Si es una nueva canción, reanuda, o detecta que adelantaste (diferencia mayor a 2s)
+                if track_name != last_discord_song or p_state != last_playback_state or last_v_start is None or abs(current_v_start - last_v_start) > 2:
+                    last_v_start = current_v_start
+                    last_v_end = current_v_end
+                    did_seek = True 
+                else:
+                    did_seek = False
+
+                v_start = last_v_start
+                v_end = last_v_end
                 v_small_icon = current_theme_data.get("small_play", "play")
                 v_txt_state = _('status_playing')
             else:
                 v_start = None; v_end = None
+                last_v_start = None; last_v_end = None # Reseteamos al pausar
+                did_seek = False
                 v_small_icon = current_theme_data.get("small_pause", "pause")
                 v_txt_state = _('status_paused')
 
@@ -1033,8 +1092,8 @@ while is_running:
             if (track_name != last_discord_song or p_state != last_playback_state or did_seek or force_timer or config_changed or force_cover_update or texts_rotated):
                 
                 img_send = theme_fallback_img if cfg_cover_source == "none" else current_cover
-                time_start = v_start if cfg_show_timeline else None
-                time_end = v_end if cfg_show_timeline else None
+                time_start = v_start if (cfg_show_timeline and duration_sec > 0) else None
+                time_end = v_end if (cfg_show_timeline and duration_sec > 0) else None
                 
                 if cfg_icon_state == "logo": s_img = theme_fallback_img; s_txt = "AIMP"
                 elif cfg_icon_state == "none": s_img = None; s_txt = None
