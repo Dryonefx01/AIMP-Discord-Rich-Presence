@@ -1,0 +1,38 @@
+[
+    {
+        "name": "AIMP",
+        "client_id": "default",
+        "large_image": "logo",
+        "small_play": "play",
+        "small_pause": "pause"
+    },
+    {
+        "name": "Blue_blight",
+        "client_id": "default",
+        "large_image": "logo",
+        "small_play": "https://cdn.pixabay.com/animation/2025/07/26/21/49/21-49-36-713_512.gif",
+        "small_pause": "pause"
+    },
+    {
+        "name": "Fluid",
+        "client_id": "default",
+        "large_image": "logo",
+        "small_play": "https://cdn.pixabay.com/animation/2024/11/11/14/28/14-28-43-45_256.gif",
+        "small_pause":"pause"
+    },
+    {
+        "name": "Dark_Waves",
+        "client_id":"default",
+        "large_image":"logo",
+        "small_play":"https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExcmhudGludm1iamF6d3Y5NW1ncm9pNmliZTkzaTR6cGh0ZWlhZzV0NyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/I8D2ue11vHpaFiggcM/giphy.gif",
+        "small_pause":"pause"
+
+    },
+    {
+        "name": "Sound_Colour",
+        "client_id":"default",
+        "large_image":"logo",
+        "small_play":"https://cdn.pixabay.com/animation/2025/01/12/16/51/16-51-51-616_256.gif",
+        "small_pause":"pause"
+    }
+]
