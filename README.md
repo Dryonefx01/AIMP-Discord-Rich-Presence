@@ -20,7 +20,7 @@ This standalone Python application acts as a bridge between AIMP and Discord, pr
 
 ## 🚀 Installation & Setup
 
-1. Go to the [Releases](https://github.com/Dryonefx01/AIMP-Discord-Rich-Presence/releases) page and download the latest `.exe` file.
+1. Go to the [Releases](https://github.com/Dryonefx01/AIMP-Discord-Rich-Presence/releases) page and download the latest executable `.exe` file.
 2. Place the executable in a dedicated folder.
 3. Run the application. A small AIMP icon will appear in your Windows System Tray (bottom right corner of your screen).
 
