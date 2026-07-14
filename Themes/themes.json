@@ -7,11 +7,11 @@
         "small_pause": "pause"
     },
     {
-        "name": "Blue_blight",
+        "name": "Blue_Blight",
         "client_id": "default",
         "large_image": "logo",
         "small_play": "https://cdn.pixabay.com/animation/2025/07/26/21/49/21-49-36-713_512.gif",
-        "small_pause": "pause"
+        "small_pause": "https://cdn.pixabay.com/animation/2024/03/07/22/53/22-53-12-54_256.gif"
     },
     {
         "name": "Fluid",
