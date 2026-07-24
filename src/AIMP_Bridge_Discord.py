@@ -15,6 +15,7 @@ import uuid
 import tkinter as tk
 import subprocess
 import tempfile
+import hashlib
 from tkinter import ttk
 from pyaimp import Client, PlayBackState
 from pypresence import Presence, ActivityType, StatusDisplayType
@@ -632,22 +633,22 @@ def build_text_menu(var_text, var_show):
 
 def set_theme_ui(theme_name):
     def setter(icon, item):
-        global cfg_theme_current, discord_connected, last_rpc_song, last_playback_state, last_resolved_theme
+        global cfg_theme_current, discord_connected, last_cover_track_id, last_playback_state, last_resolved_theme
         if cfg_theme_current != theme_name:
             cfg_theme_current = theme_name
             save_config()
-            last_rpc_song = ""; last_resolved_theme = ""
+            last_cover_track_id = ""; last_resolved_theme = ""
     return setter
 
 def check_theme_ui(theme_name): return lambda item: cfg_theme_current == theme_name
 
 def toggle_special_theme(theme_name):
     def toggler(icon, item):
-        global cfg_theme_current, discord_connected, last_rpc_song, last_playback_state, last_resolved_theme
+        global cfg_theme_current, discord_connected, last_cover_track_id, last_playback_state, last_resolved_theme
         if cfg_theme_current == theme_name: cfg_theme_current = themes_list[0].get("name", "Default")
         else: cfg_theme_current = theme_name
         save_config()
-        last_rpc_song = ""; last_resolved_theme = ""
+        last_cover_track_id = ""; last_resolved_theme = ""
         icon.menu = build_dynamic_menu()
     return toggler
 
@@ -939,9 +940,11 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
 
     final_url = fallback_img
     main_artist = extract_main_artist(raw_artist)
-    clean_album = target_album.lower().strip()
-    is_unknown_album = clean_album in ["", "album", _("unknown_album").lower(), "unknown single/album"]
-    db_key = f"{main_artist} - {target_track}" if is_unknown_album else f"{main_artist} - {target_album}"
+    
+    file_path_safe = str(file_path).replace("\\", "/").lower().strip() if file_path else "nofile"
+    file_id = hashlib.md5(file_path_safe.encode('utf-8', errors='ignore')).hexdigest()[:8]
+    
+    db_key = f"{main_artist} - {target_album} - {target_track} - {file_id}"
 
     if db_key in global_covers_cache:
         cached_url = global_covers_cache[db_key]
@@ -992,10 +995,9 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
 
     if thread_id != cover_thread_counter: return
 
-    if target_track == last_rpc_song:
-        if final_url != fallback_img: current_cover = f"{final_url}?v={int(time.time())}"
-        else: current_cover = final_url
-        force_cover_update = True
+    if final_url != fallback_img: current_cover = f"{final_url}?v={int(time.time())}"
+    else: current_cover = final_url
+    force_cover_update = True
 
 icon.run_detached()
 
@@ -1006,8 +1008,8 @@ discord_connected = False
 aimp = connect_aimp()
 aimp_connected = True
 
-last_rpc_song = ""
-last_discord_song = ""
+last_cover_track_id = ""
+last_discord_track_id = ""
 last_playback_state = None
 last_aimp_pos = 0
 current_cover = "logo"
@@ -1035,6 +1037,12 @@ while is_running:
         if info and p_state != PlayBackState.Stopped:
             track_name = info.get('title', _('unknown_track')) or _('unknown_track')
             file_path = info.get('filename', '')
+            album_name = info.get('album', _('unknown_album')) or _('unknown_album')
+            artist_name = info.get('artist', _('unknown_artist')) or _('unknown_artist')
+            pos_sec = int(aimp.get_player_position() / 1000)
+            duration_sec = int(info['duration'] / 1000)
+            
+            current_track_id = f"{artist_name}|{album_name}|{track_name}|{file_path}"
             
             resolved_theme_name = determine_active_theme(cfg_theme_current, track_name, file_path)
             current_theme_data = get_theme_data(resolved_theme_name)
@@ -1043,7 +1051,7 @@ while is_running:
             
             if resolved_theme_name != last_resolved_theme:
                 last_resolved_theme = resolved_theme_name
-                last_rpc_song = ""
+                last_cover_track_id = ""
                 if processed_req_id != active_client_id and discord_connected:
                     if RPC:
                         try: RPC.clear(); RPC.close()
@@ -1057,8 +1065,8 @@ while is_running:
                     active_client_id = connected_id
                     discord_connected = True
                     last_discord_update = 0
-                    last_discord_song = ""
-                    last_rpc_song = ""
+                    last_discord_track_id = ""
+                    last_cover_track_id = ""
                     current_cover = current_theme_data.get("large_image", "logo")
                 else:
                     time.sleep(0.5)
@@ -1069,7 +1077,7 @@ while is_running:
                     try: RPC.clear()
                     except: pass
                     last_playback_state = PlayBackState.Stopped
-                    last_discord_song = ""
+                    last_discord_track_id = ""
                 time.sleep(0.5)
                 continue
 
@@ -1078,20 +1086,15 @@ while is_running:
                     try: RPC.clear()
                     except: pass
                     last_playback_state = PlayBackState.Stopped
-                    last_discord_song = ""
+                    last_discord_track_id = ""
                 last_config_state = current_config_state
                 time.sleep(0.5)
                 continue
 
-            album_name = info.get('album', _('unknown_album')) or _('unknown_album')
-            artist_name = info.get('artist', _('unknown_artist')) or _('unknown_artist')
-            pos_sec = int(aimp.get_player_position() / 1000)
-            duration_sec = int(info['duration'] / 1000)
-
             theme_fallback_img = current_theme_data.get("large_image", "logo")
 
-            if track_name != last_rpc_song:
-                last_rpc_song = track_name
+            if current_track_id != last_cover_track_id:
+                last_cover_track_id = current_track_id
                 current_cover = theme_fallback_img
                 cover_thread_counter += 1
                 if cfg_cover_source != "none":
@@ -1099,13 +1102,13 @@ while is_running:
                 else: force_cover_update = True
 
             if p_state == PlayBackState.Playing:
-                if track_name != last_discord_song and last_discord_song != "" and pos_sec > 3: pos_sec = 0
+                if current_track_id != last_discord_track_id and last_discord_track_id != "" and pos_sec > 3: pos_sec = 0
                 if duration_sec > 0 and pos_sec > duration_sec: pos_sec = duration_sec
 
                 current_v_start = int(time.time()) - pos_sec
                 current_v_end = current_v_start + duration_sec
                 
-                if track_name != last_discord_song or p_state != last_playback_state or last_v_start is None or abs(current_v_start - last_v_start) > 2:
+                if current_track_id != last_discord_track_id or p_state != last_playback_state or last_v_start is None or abs(current_v_start - last_v_start) > 2:
                     last_v_start = current_v_start; last_v_end = current_v_end; did_seek = True
                 else: did_seek = False
 
@@ -1153,7 +1156,7 @@ while is_running:
             if status_mode == 'name': type_display = StatusDisplayType.NAME
             elif status_mode == 'state': type_display = StatusDisplayType.STATE
 
-            if (track_name != last_discord_song or p_state != last_playback_state or did_seek or force_timer or config_changed or force_cover_update or texts_rotated):
+            if (current_track_id != last_discord_track_id or p_state != last_playback_state or did_seek or force_timer or config_changed or force_cover_update or texts_rotated):
                 
                 img_send = theme_fallback_img if cfg_cover_source == "none" else current_cover
                 time_start = v_start if (cfg_show_timeline and duration_sec > 0) else None
@@ -1173,7 +1176,7 @@ while is_running:
                     parsed_large_url = None
                 
                 try:
-                    if track_name != last_discord_song: logger(f"Activity Updated -> {track_name} by {artist_name} | Path: {file_path}")
+                    if current_track_id != last_discord_track_id: logger(f"Activity Updated -> {track_name} by {artist_name} | Path: {file_path}")
 
                     RPC.update(
                         name=t_name[:128] if t_name else None,
@@ -1189,19 +1192,19 @@ while is_running:
                         activity_type=ActivityType.LISTENING, status_display_type=type_display
                     )
 
-                    last_discord_song = track_name; last_playback_state = p_state
+                    last_discord_track_id = current_track_id; last_playback_state = p_state
                     last_discord_update = time.time(); last_config_state = current_config_state
                     force_cover_update = False; last_evaluated_texts = current_texts
                 except Exception as e:
                     logger(f"Discord update error: {e}")
-                    RPC = None; discord_connected = False; last_rpc_song = ""
+                    RPC = None; discord_connected = False; last_cover_track_id = ""
         
         elif (not info or p_state == PlayBackState.Stopped) and discord_connected:
             if last_playback_state != PlayBackState.Stopped or config_changed:
                 try: RPC.clear()
                 except: pass
                 last_playback_state = PlayBackState.Stopped
-                last_discord_song = ""; last_rpc_song = ""; last_config_state = current_config_state
+                last_discord_track_id = ""; last_cover_track_id = ""; last_config_state = current_config_state
         
     except Exception as e:
         logger(f"Primary loop exception: {e}")
@@ -1209,6 +1212,6 @@ while is_running:
         if RPC:
             try: RPC.clear()
             except: pass
-        RPC = None; discord_connected = False; last_rpc_song = ""
+        RPC = None; discord_connected = False; last_cover_track_id = ""
     
     time.sleep(0.5)
