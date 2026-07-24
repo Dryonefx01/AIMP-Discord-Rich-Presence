@@ -49,5 +49,5 @@
     "unknown_track": "Pista Desconocida",
     "unknown_artist": "Artista Desconocido",
     "unknown_album": "Sencillo/Álbum Desconocido",
-    "by_artist": "por {artist}"
+    "by_artist": "de {artist}"
 }
