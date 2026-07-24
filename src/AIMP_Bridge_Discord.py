@@ -4,15 +4,17 @@ import urllib.parse
 import sys
 import os
 import re
-import threading 
-import winreg 
-import ctypes 
-import io 
+import threading
+import winreg
+import ctypes
+import io
 import json
 import random
 import base64
 import uuid
 import tkinter as tk
+import subprocess
+import tempfile
 from tkinter import ttk
 from pyaimp import Client, PlayBackState
 from pypresence import Presence, ActivityType, StatusDisplayType
@@ -21,19 +23,16 @@ from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 from mutagen import File
 
-# --- MULTI-INSTANCE PREVENTION ---
 mutex_name = "AIMP_Bridge_Discord_Mutex"
 mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-if ctypes.windll.kernel32.GetLastError() == 183: 
-    sys.exit(0) 
+if ctypes.windll.kernel32.GetLastError() == 183:
+    sys.exit(0)
 
-# --- SECURITY: TOKEN DEOBFUSCATION ---
 def decode_token(token_str):
     if token_str.startswith("ENC_REV_"):
         return token_str[8:][::-1]
     return token_str
 
-# --- PATHS AND CONSTANTS ---
 RAW_CLIENT_ID = "ENC_REV_5479661860780909841"
 CLIENT_ID_DEFAULT = decode_token(RAW_CLIENT_ID)
 REG_PATH_STARTUP = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -53,7 +52,6 @@ def logger(message):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}", flush=True)
 
-# --- ANONYMOUS UUID INITIALIZATION ---
 def get_or_create_user_uuid():
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_CONFIG, 0, winreg.KEY_READ)
@@ -71,7 +69,6 @@ def get_or_create_user_uuid():
 
 USER_UUID = get_or_create_user_uuid()
 
-# --- GITHUB DATABASE CONFIGURATION ---
 RAW_GITHUB_TOKEN = "ENC_REV_WVOlPKMFBAUDHOS4EsdiWK0VZuy2qy0y6fVONDXqjmzs0KEfhXMr5mnKvxN_naHvHuW3OzPD0YR2A3JB11_tap_buhtig"
 GITHUB_TOKEN = decode_token(RAW_GITHUB_TOKEN)
 GITHUB_REPO = "Dryonefx01/Discord-Presence-Script-AIMP-"
@@ -81,7 +78,6 @@ GITHUB_KEYS_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/keys
 global_covers_cache = {}
 global_covers_sha = None
 
-# Lista de reserva inicial (se sobreescribirá con lo que descargue de GitHub)
 imgbb_api_keys = [decode_token('ENC_REV_50b7617d2ef33cd4f6e37ddd4d03e31e')]
 
 if os.path.exists(path_local_covers_json):
@@ -90,9 +86,13 @@ if os.path.exists(path_local_covers_json):
             global_covers_cache = json.load(f)
     except: pass
 
-# --- IMGBB LOAD BALANCER (ANTI-BAN SYSTEM) ---
+imgbb_keys_fetched = False
+
 def fetch_imgbb_keys():
-    global imgbb_api_keys
+    global imgbb_api_keys, imgbb_keys_fetched
+    if imgbb_keys_fetched:
+        return
+        
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     try:
         r = requests.get(GITHUB_KEYS_API_URL, headers=headers, timeout=10)
@@ -102,12 +102,12 @@ def fetch_imgbb_keys():
             keys_data = json.loads(content)
             if "keys" in keys_data and isinstance(keys_data["keys"], list) and len(keys_data["keys"]) > 0:
                 imgbb_api_keys = keys_data["keys"]
+                imgbb_keys_fetched = True
                 logger(f"Loaded {len(imgbb_api_keys)} ImgBB API keys from GitHub pool.")
         elif r.status_code == 404:
-            # Si el archivo no existe, crea una plantilla en GitHub para que el usuario la llene manualmente
             initial_data = {
-                "_instructions": "Agrega tus API keys de ImgBB dentro de la lista 'keys' separadas por comas.",
-                "keys": [imgbb_api_keys[0], "AGREGA_TU_SEGUNDA_API_KEY_AQUI", "AGREGA_TU_TERCERA_API_KEY_AQUI"]
+                "_instructions": "Add your ImgBB API keys inside the 'keys' list separated by commas.",
+                "keys": [imgbb_api_keys[0], "ADD_YOUR_SECOND_API_KEY_HERE"]
             }
             content_str = json.dumps(initial_data, indent=4)
             b64_content = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
@@ -117,7 +117,6 @@ def fetch_imgbb_keys():
     except Exception as e:
         logger(f"Failed to fetch ImgBB keys: {e}")
 
-# --- GITHUB DATABASE SYNC ---
 def sync_covers_db():
     global global_covers_cache, global_covers_sha
     headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
@@ -131,11 +130,9 @@ def sync_covers_db():
             global_covers_cache.update(remote_cache)
             with open(path_local_covers_json, "w", encoding="utf-8") as f:
                 json.dump(global_covers_cache, f, indent=4, ensure_ascii=False)
-            logger(f"Isolated Covers DB Synced for User {USER_UUID[:8]}... Items: {len(global_covers_cache)}")
+            logger(f"Isolated Covers DB Synced. Items: {len(global_covers_cache)}")
         elif r.status_code == 404:
             push_covers_db()
-        elif r.status_code == 401:
-            logger("GitHub API: 401 Unauthorized. The token is invalid or expired.")
     except Exception as e:
         logger(f"Failed to sync isolated Covers DB: {e}")
 
@@ -148,36 +145,23 @@ def push_covers_db(retry=True):
 
         content_str = json.dumps(global_covers_cache, indent=4)
         b64_content = base64.b64encode(content_str.encode('utf-8')).decode('utf-8')
-        payload = {"message": f"Auto-update isolated covers DB for {USER_UUID[:8]}", "content": b64_content}
-        
-        if global_covers_sha: 
-            payload["sha"] = global_covers_sha
+        payload = {"message": f"Auto-update isolated covers DB", "content": b64_content}
+        if global_covers_sha: payload["sha"] = global_covers_sha
         
         r = requests.put(GITHUB_API_URL, headers=headers, json=payload, timeout=10)
-        
-        if r.status_code in [200, 201]:
-            global_covers_sha = r.json()['content']['sha']
+        if r.status_code in [200, 201]: global_covers_sha = r.json()['content']['sha']
         elif r.status_code == 409 and retry:
-            logger("SHA Conflict (409) detected. Resyncing and retrying push...")
-            sync_covers_db() 
-            push_covers_db(retry=False) 
-        elif r.status_code == 401:
-            logger("GitHub API: 401 Unauthorized. The token is invalid or expired.")
-        else:
-            logger(f"Failed to push with status code: {r.status_code}")
-            
+            sync_covers_db()
+            push_covers_db(retry=False)
     except Exception as e:
         logger(f"Failed to push isolated Covers DB: {e}")
 
-# Iniciar ambos hilos al arrancar
 threading.Thread(target=sync_covers_db, daemon=True).start()
-threading.Thread(target=fetch_imgbb_keys, daemon=True).start()
 
-# --- DYNAMIC LOCALES SYSTEM (i18n) ---
 GITHUB_LOCALES_BASE = "https://raw.githubusercontent.com/Dryonefx01/AIMP-Discord-Rich-Presence/refs/heads/main/locales/"
 GITHUB_LOCALES_INDEX = f"{GITHUB_LOCALES_BASE}index.json"
 
-cached_locales = {"en": "English", "es": "Español"}
+cached_locales = {"en": "English", "es": "Spanish"}
 
 def fetch_locales_index():
     global cached_locales
@@ -201,6 +185,11 @@ DEFAULT_EN_JSON = {
     "menu_show_timeline": "Show Timeline",
     "menu_album_cover": "Album Cover",
     "menu_status_icon": "Status Icon",
+    "menu_buttons": "Buttons / Links",
+    "opt_default_buttons": "Default (Spotify & YouTube)",
+    "opt_custom_buttons": "Custom (Auto-Switch)",
+    "menu_button_rules": "Custom Rules",
+    "opt_open_button_rules": "Edit buttons.json",
     "menu_theme": "Theme",
     "theme_auto_random": "Automatic (Random Theme)",
     "menu_language": "Language",
@@ -208,6 +197,7 @@ DEFAULT_EN_JSON = {
     "opt_open_filters": "Open filters.json",
     "menu_auto_themes": "Custom Theme Rules",
     "opt_open_auto_themes": "Edit auto_themes.json",
+    "menu_restart": "Restart",
     "menu_exit": "Exit",
     "opt_show": "Show...",
     "opt_always": "Always",
@@ -263,14 +253,12 @@ def load_language(lang_code):
 
 def _(key): return current_locale_data.get(key, key)
 
-# --- SYSTEM TRAY UI ---
 def build_icon_image():
-    img = Image.new('RGB', (64, 64), color=(255, 128, 0)) 
+    img = Image.new('RGB', (64, 64), color=(255, 128, 0))
     draw = ImageDraw.Draw(img)
-    draw.polygon([(32, 12), (52, 48), (12, 48)], fill=(255, 255, 255)) 
+    draw.polygon([(32, 12), (52, 48), (12, 48)], fill=(255, 255, 255))
     return img
 
-# --- FIRST RUN UI ---
 def is_first_run():
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_CONFIG, 0, winreg.KEY_READ)
@@ -285,30 +273,23 @@ def run_first_setup_ui():
     root.geometry("300x120")
     root.resizable(False, False)
     root.eval('tk::PlaceWindow . center')
-    
     try:
         icon_path = os.path.join(app_data_dir, "temp_icon.ico")
         build_icon_image().save(icon_path, format="ICO")
         root.iconbitmap(icon_path)
     except: pass
-
     selected_lang = tk.StringVar()
-    
     def on_close(): sys.exit(0)
     root.protocol("WM_DELETE_WINDOW", on_close)
-
     ttk.Label(root, text="Select your language:", justify="center", font=("Arial", 10)).pack(pady=10)
-
     cb = ttk.Combobox(root, values=list(cached_locales.values()), state="readonly", font=("Arial", 10))
     if "English" in cached_locales.values(): cb.current(list(cached_locales.values()).index("English"))
     elif len(cached_locales) > 0: cb.current(0)
     cb.pack(pady=5)
-
     def on_confirm():
         val_to_key = {v: k for k, v in cached_locales.items()}
         selected_lang.set(val_to_key.get(cb.get(), "en"))
         root.destroy()
-
     ttk.Button(root, text="Continue", command=on_confirm).pack(pady=10)
     root.mainloop()
     return selected_lang.get()
@@ -321,7 +302,6 @@ if is_first_run():
         winreg.CloseKey(key)
     except: pass
 
-# --- JSON SYSTEMS & DEFAULT DATA ---
 DEFAULT_FILTERS = {
     "_instructions": "timeout_minutes: 0 to disable. time_range: HH:MM-HH:MM (24h format). blacklist: list of song titles or file paths.",
     "timeout_minutes": 0, "time_range": "", "blacklist": []
@@ -331,26 +311,55 @@ DEFAULT_AUTO_THEMES = {
     "_instructions": "fallback_theme is used when filters are inactive. Set timer_rotation_enabled to false to disable timer rotation.",
     "fallback_theme": "Default (AIMP)",
     "timer_rotation_enabled": True,
-    "file_rules": [
-        {"match": "C:\\Secret_Folder", "theme": "__AUTOMATIC__"}
-    ],
-    "timer_rotation": [
-        {"theme": "Default (AIMP)", "time": 3600}
+    "file_rules": [{"match": "C:\\Secret_Folder", "theme": "__AUTOMATIC__"}],
+    "timer_rotation": [{"theme": "Default (AIMP)", "time": 3600}]
+}
+
+DEFAULT_BUTTONS = {
+    "_instructions": "Variables: {title}, {artist}, {album}. Use __disabled__ as label to hide a button. Leave details_url/state_url empty '' to disable. Set large_url to 'default' to open cover image.",
+    "fallback_profile": "Default",
+    "profiles": [
+        {
+            "match": "Default",
+            "button_1": {"label": "Spotify", "url": "https://open.spotify.com/search/{artist}%20{title}"},
+            "button_2": {"label": "YouTube", "url": "https://www.youtube.com/results?search_query={artist}%20{title}"},
+            "details_url": "https://open.spotify.com/search/{artist}%20{title}",
+            "state_url": "https://www.youtube.com/results?search_query={artist}%20{title}",
+            "large_url": "default"
+        },
+        {
+            "match": "C:\\Users\\DryoneFX\\Music",
+            "button_1": {"label": "Deezer", "url": "https://www.deezer.com/search/{artist}%20{album}%20{title}"},
+            "button_2": {"label": "__disabled__", "url": ""},
+            "details_url": "https://www.deezer.com/search/{artist}%20{album}%20{title}",
+            "state_url": "",
+            "large_url": "default"
+        }
     ]
 }
 
+_json_cache = {}
+_json_mtime = {}
+
 def load_json_file_safe(path, default_data):
+    try: mtime = os.path.getmtime(path)
+    except OSError: mtime = 0
+    if path in _json_cache and _json_mtime.get(path) == mtime: return _json_cache[path]
     if not os.path.exists(path):
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(default_data, f, indent=4, ensure_ascii=False)
+            with open(path, "w", encoding="utf-8") as f: json.dump(default_data, f, indent=4, ensure_ascii=False)
+            _json_cache[path] = default_data
+            _json_mtime[path] = mtime
             return default_data
-        except: return default_data
+        except Exception: return default_data
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw_text = f.read()
             raw_text = raw_text.replace('\\\\', '\\').replace('\\', '\\\\')
-            return json.loads(raw_text)
+            parsed = json.loads(raw_text)
+            _json_cache[path] = parsed
+            _json_mtime[path] = mtime
+            return parsed
     except Exception as e:
         logger(f"Error parsing JSON {path}: {e}")
         return default_data
@@ -359,12 +368,9 @@ path_themes_json = os.path.join(app_data_dir, "themes.json")
 path_custom_json = os.path.join(app_data_dir, "custom_texts.json")
 path_filters_json = os.path.join(app_data_dir, "filters.json")
 path_auto_themes_json = os.path.join(app_data_dir, "auto_themes.json")
+path_buttons_json = os.path.join(app_data_dir, "buttons.json")
 
-def load_themes_list():
-    return load_json_file_safe(path_themes_json, [{
-        "name": "Default (AIMP)", "client_id": "default", "large_image": "logo", "small_play": "play", "small_pause": "pause"
-    }])
-
+def load_themes_list(): return load_json_file_safe(path_themes_json, [{"name": "Default (AIMP)", "client_id": "default", "large_image": "logo", "small_play": "play", "small_pause": "pause"}])
 def load_custom_texts():
     default_data = {
         "_instructions": "Format: [{'text': '{title}', 'time': 5}, ...]. 'time' is in seconds.",
@@ -376,11 +382,9 @@ def load_custom_texts():
     }
     return load_json_file_safe(path_custom_json, default_data)
 
-def load_filters():
-    return load_json_file_safe(path_filters_json, DEFAULT_FILTERS)
-
-def load_auto_themes():
-    return load_json_file_safe(path_auto_themes_json, DEFAULT_AUTO_THEMES)
+def load_filters(): return load_json_file_safe(path_filters_json, DEFAULT_FILTERS)
+def load_auto_themes(): return load_json_file_safe(path_auto_themes_json, DEFAULT_AUTO_THEMES)
+def load_buttons_config(): return load_json_file_safe(path_buttons_json, DEFAULT_BUTTONS)
 
 themes_list = load_themes_list()
 
@@ -389,13 +393,11 @@ def get_theme_data(theme_name):
         if t.get("name") == theme_name: return t
     return themes_list[0] if themes_list else {"name": "Fallback", "client_id": "default"}
 
-# --- AUTO THEME ENGINE ---
 current_random_theme = None
 random_theme_song = ""
 
 def determine_active_theme(cfg_theme, track_name, file_path):
     global current_random_theme, random_theme_song
-    
     def process_assignment(assigned_theme):
         global current_random_theme, random_theme_song
         if assigned_theme == '__AUTOMATIC__':
@@ -416,8 +418,7 @@ def determine_active_theme(cfg_theme, track_name, file_path):
     
     for rule in auto_data.get("file_rules", []):
         m_val = str(rule.get("match", "")).lower()
-        if m_val and (m_val in track_lower or m_val in path_lower):
-            return process_assignment(rule.get("theme", fallback))
+        if m_val and (m_val in track_lower or m_val in path_lower): return process_assignment(rule.get("theme", fallback))
             
     if auto_data.get("timer_rotation_enabled", True):
         rotation = auto_data.get("timer_rotation", [])
@@ -429,15 +430,12 @@ def determine_active_theme(cfg_theme, track_name, file_path):
                 for item in rotation:
                     acc += max(1, item.get("time", 60))
                     if c_mod < acc: return process_assignment(item.get("theme", fallback))
-            
     return process_assignment(fallback)
 
-# --- SMART FILTERS ENGINE ---
 playing_start_time = None
 def is_filtered(track_name, file_path, is_playing):
     global playing_start_time
     f_data = load_filters()
-    
     track_lower = track_name.lower()
     path_lower = str(file_path).lower() if file_path else ""
     for b_item in f_data.get("blacklist", []):
@@ -467,14 +465,11 @@ def is_filtered(track_name, file_path, is_playing):
             elif (time.time() - playing_start_time) / 60 >= timeout: return True
         else: playing_start_time = None
     else: playing_start_time = None
-
     return False
 
-# --- CONFIG & REGISTRY ---
 api_key_lastfm = decode_token('ENC_REV_27085995c4608f95d9b4270b0f1e6a3c')
-
 http_session = requests.Session()
-http_session.headers.update({'user-agent': 'AimpDiscordBridge/6.1'})
+http_session.headers.update({'user-agent': 'AimpDiscordBridge/6.2'})
 
 def is_startup_enabled():
     try:
@@ -488,9 +483,10 @@ def load_config():
     config = {
         'show_pause': True, 'cover_source': "file_lastfm", 'show_timeline': True,
         'icon_state': "dynamic", 'theme_current': themes_list[0].get("name", "Default"),
-        'text_name': "aimp", 'text_details': "title", 'text_state': "artist",
-        'text_large': "album", 'show_name': "auto", 'show_details': "auto",
-        'show_state': "auto", 'show_large': "auto", 'status_display': "details", 'language': "en"
+        'buttons_mode': "default", 'text_name': "aimp", 'text_details': "title",
+        'text_state': "artist", 'text_large': "album", 'show_name': "auto",
+        'show_details': "auto", 'show_state': "auto", 'show_large': "auto",
+        'status_display': "details", 'language': "en"
     }
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_CONFIG, 0, winreg.KEY_READ)
@@ -510,13 +506,13 @@ def save_config():
         winreg.SetValueEx(key, "show_pause", 0, winreg.REG_DWORD, int(cfg_show_pause))
         winreg.SetValueEx(key, "show_timeline", 0, winreg.REG_DWORD, int(cfg_show_timeline))
         params = [
-            ("cover_source", cfg_cover_source), ("icon_state", cfg_icon_state), 
-            ("theme_current", cfg_theme_current), ("text_name", cfg_text_name),
-            ("text_details", cfg_text_details), ("text_state", cfg_text_state), 
-            ("text_large", cfg_text_large), ("show_name", cfg_show_name), 
-            ("show_details", cfg_show_details), ("show_state", cfg_show_state), 
-            ("show_large", cfg_show_large), ("status_display", cfg_status_display),
-            ("language", cfg_language)
+            ("cover_source", cfg_cover_source), ("icon_state", cfg_icon_state),
+            ("theme_current", cfg_theme_current), ("buttons_mode", cfg_buttons_mode),
+            ("text_name", cfg_text_name), ("text_details", cfg_text_details),
+            ("text_state", cfg_text_state), ("text_large", cfg_text_large),
+            ("show_name", cfg_show_name), ("show_details", cfg_show_details),
+            ("show_state", cfg_show_state), ("show_large", cfg_show_large),
+            ("status_display", cfg_status_display), ("language", cfg_language)
         ]
         for name, val in params: winreg.SetValueEx(key, name, 0, winreg.REG_SZ, val)
         winreg.CloseKey(key)
@@ -529,6 +525,7 @@ cfg_show_timeline = cfg['show_timeline']
 cfg_cover_source = cfg['cover_source']
 cfg_icon_state = cfg['icon_state']
 cfg_theme_current = cfg['theme_current']
+cfg_buttons_mode = cfg['buttons_mode']
 cfg_text_name = cfg['text_name']
 cfg_text_details = cfg['text_details']
 cfg_text_state = cfg['text_state']
@@ -540,52 +537,80 @@ cfg_show_large = cfg['show_large']
 cfg_status_display = cfg['status_display']
 cfg_language = cfg['language']
 
-is_running = True 
+is_running = True
 load_language(cfg_language)
 
 def get_config_state_tuple():
-    return (cfg_show_pause, cfg_cover_source, cfg_show_timeline, cfg_icon_state, cfg_theme_current, 
-            cfg_text_name, cfg_text_details, cfg_text_state, cfg_text_large, cfg_show_name, 
+    return (cfg_show_pause, cfg_cover_source, cfg_show_timeline, cfg_icon_state, cfg_theme_current,
+            cfg_buttons_mode, cfg_text_name, cfg_text_details, cfg_text_state, cfg_text_large, cfg_show_name,
             cfg_show_details, cfg_show_state, cfg_show_large, cfg_status_display, cfg_language)
 
-# --- MENUS ---
 def toggle_startup(icon, item):
     global cfg_startup
     enabled = is_startup_enabled()
     cfg_startup = not enabled
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_PATH_STARTUP, 0, winreg.KEY_ALL_ACCESS)
-        if enabled:
-            winreg.DeleteValue(key, APP_NAME)
+        if enabled: winreg.DeleteValue(key, APP_NAME)
         else:
             exe_path = sys.argv[0]
-            if not exe_path.endswith('.exe'):
-                exe_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
+            if not exe_path.endswith('.exe'): exe_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, exe_path)
         winreg.CloseKey(key)
-    except Exception as e:
-        logger(f"Startup toggle error: {e}")
+    except Exception as e: logger(f"Startup toggle error: {e}")
 
 def set_radio(var_name, value):
-    def setter(icon, item): 
+    def setter(icon, item):
         globals()[var_name] = value
-        guardar_config_y_actualizar()
+        save_config_and_update()
     return setter
 
 def check_radio(var_name, value): return lambda item: globals()[var_name] == value
 
 def set_toggle(var_name):
-    def toggler(icon, item): 
+    def toggler(icon, item):
         globals()[var_name] = not globals()[var_name]
-        guardar_config_y_actualizar()
+        save_config_and_update()
     return toggler
 
-def guardar_config_y_actualizar():
+def save_config_and_update():
     save_config()
     if sys._getframe(1).f_code.co_name == 'setter' and 'cfg_language' in globals():
         load_language(cfg_language)
         icon.menu = build_dynamic_menu()
 
+def restart_app(icon, item):
+    global is_running, mutex
+    is_running = False
+    icon.stop()
+    try:
+        if 'mutex' in globals() and mutex:
+            ctypes.windll.kernel32.ReleaseMutex(mutex)
+            ctypes.windll.kernel32.CloseHandle(mutex)
+    except: pass
+    
+    if getattr(sys, 'frozen', False):
+        exe_path = sys.executable
+        env = os.environ.copy()
+        if hasattr(sys, '_MEIPASS'):
+            old_meipass = sys._MEIPASS.lower().rstrip('\\')
+            keys_to_delete = []
+            for k, v in env.items():
+                k_upper = k.upper()
+                if k_upper in ['_MEIPASS2', '_MEIPASS', 'TCL_LIBRARY', 'TK_LIBRARY'] or k_upper.startswith('_PYI_'): keys_to_delete.append(k)
+                elif old_meipass in v.lower():
+                    if k_upper == 'PATH':
+                        clean_paths = [p for p in v.split(os.pathsep) if old_meipass not in p.lower()]
+                        env[k] = os.pathsep.join(clean_paths)
+                    else: keys_to_delete.append(k)
+            for k in keys_to_delete: env.pop(k, None)
+        DETACHED_PROCESS = 0x00000008
+        subprocess.Popen([exe_path], env=env, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+    else:
+        DETACHED_PROCESS = 0x00000008
+        subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+    os._exit(0)
+        
 def exit_app(icon, item):
     global is_running
     is_running = False
@@ -611,8 +636,7 @@ def set_theme_ui(theme_name):
         if cfg_theme_current != theme_name:
             cfg_theme_current = theme_name
             save_config()
-            last_rpc_song = "" 
-            last_resolved_theme = "" 
+            last_rpc_song = ""; last_resolved_theme = ""
     return setter
 
 def check_theme_ui(theme_name): return lambda item: cfg_theme_current == theme_name
@@ -620,13 +644,10 @@ def check_theme_ui(theme_name): return lambda item: cfg_theme_current == theme_n
 def toggle_special_theme(theme_name):
     def toggler(icon, item):
         global cfg_theme_current, discord_connected, last_rpc_song, last_playback_state, last_resolved_theme
-        if cfg_theme_current == theme_name:
-            cfg_theme_current = themes_list[0].get("name", "Default")
-        else:
-            cfg_theme_current = theme_name
+        if cfg_theme_current == theme_name: cfg_theme_current = themes_list[0].get("name", "Default")
+        else: cfg_theme_current = theme_name
         save_config()
-        last_rpc_song = ""
-        last_resolved_theme = ""
+        last_rpc_song = ""; last_resolved_theme = ""
         icon.menu = build_dynamic_menu()
     return toggler
 
@@ -634,8 +655,7 @@ def open_file(path, default_data_dict):
     def opener(icon, item):
         if not os.path.exists(path):
             try:
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(default_data_dict, f, indent=4, ensure_ascii=False)
+                with open(path, "w", encoding="utf-8") as f: json.dump(default_data_dict, f, indent=4, ensure_ascii=False)
             except Exception as e:
                 logger(f"Error creating file {path}: {e}")
                 return
@@ -644,18 +664,11 @@ def open_file(path, default_data_dict):
     return opener
 
 def build_dynamic_menu():
-    def is_theme_enabled(item_instance):
-        return cfg_theme_current not in ['__CUSTOM_AUTO__', '__AUTOMATIC__']
-
+    def is_theme_enabled(item_instance): return cfg_theme_current not in ['__CUSTOM_AUTO__', '__AUTOMATIC__']
     themes_menu_items = [
-        item(t.get("name", "Unknown"), 
-             set_theme_ui(t.get("name")), 
-             checked=check_theme_ui(t.get("name")), 
-             radio=True, 
-             enabled=is_theme_enabled) 
+        item(t.get("name", "Unknown"), set_theme_ui(t.get("name")), checked=check_theme_ui(t.get("name")), radio=True, enabled=is_theme_enabled)
         for t in themes_list
     ]
-    
     themes_menu_items.append(pystray.Menu.SEPARATOR)
     themes_menu_items.append(item(lambda t: _('opt_custom_auto'), toggle_special_theme('__CUSTOM_AUTO__'), checked=check_theme_ui('__CUSTOM_AUTO__')))
     themes_menu_items.append(item(lambda t: _('theme_auto_random'), toggle_special_theme('__AUTOMATIC__'), checked=check_theme_ui('__AUTOMATIC__')))
@@ -663,7 +676,6 @@ def build_dynamic_menu():
     themes_menu_items.append(item(lambda t: _('menu_auto_themes'), pystray.Menu(
         item(lambda t: _('opt_open_auto_themes'), open_file(path_auto_themes_json, DEFAULT_AUTO_THEMES))
     )))
-    
     lang_menu_items = [item(name, set_radio('cfg_language', code), checked=check_radio('cfg_language', code), radio=True) for code, name in cached_locales.items()]
 
     return pystray.Menu(
@@ -695,21 +707,29 @@ def build_dynamic_menu():
                 item(lambda t: _('opt_none'), set_radio('cfg_icon_state', 'none'), checked=check_radio('cfg_icon_state', 'none'), radio=True)
             ))
         )),
+        item(lambda t: _('menu_buttons'), pystray.Menu(
+            item(lambda t: _('opt_default_buttons'), set_radio('cfg_buttons_mode', 'default'), checked=check_radio('cfg_buttons_mode', 'default'), radio=True),
+            item(lambda t: _('opt_custom_buttons'), set_radio('cfg_buttons_mode', '__CUSTOM_AUTO__'), checked=check_radio('cfg_buttons_mode', '__CUSTOM_AUTO__'), radio=True),
+            pystray.Menu.SEPARATOR,
+            item(lambda t: _('menu_button_rules'), pystray.Menu(
+                item(lambda t: _('opt_open_button_rules'), open_file(path_buttons_json, DEFAULT_BUTTONS))
+            ))
+        )),
         item(lambda t: _('menu_filters'), pystray.Menu(
             item(lambda t: _('opt_open_filters'), open_file(path_filters_json, DEFAULT_FILTERS))
         )),
         item(lambda t: _('menu_theme'), pystray.Menu(*themes_menu_items)),
         item(lambda t: _('menu_language'), pystray.Menu(*lang_menu_items)),
+        item(lambda t: _('menu_restart'), restart_app),
         item(lambda t: _('menu_exit'), exit_app)
     )
 
 icon = pystray.Icon("AIMP Bridge", build_icon_image(), "AIMP Discord Bridge", build_dynamic_menu())
 
-# --- CORE FUNCTIONS ---
 def connect_aimp():
     while is_running:
         try: return Client()
-        except: time.sleep(3)
+        except: time.sleep(0.5)
 
 def is_valid_client_id(cid): return bool(cid and str(cid).isdigit() and len(str(cid)) >= 15)
 
@@ -725,10 +745,8 @@ def connect_discord_core(cid, max_retries=3):
 
 def connect_discord_safe(requested_cid):
     id_str = str(requested_cid).strip().lower()
-    if not id_str or id_str == "default" or id_str == "none":
-        return connect_discord_core(CLIENT_ID_DEFAULT), CLIENT_ID_DEFAULT
-    if not is_valid_client_id(requested_cid):
-        return connect_discord_core(CLIENT_ID_DEFAULT), CLIENT_ID_DEFAULT
+    if not id_str or id_str == "default" or id_str == "none": return connect_discord_core(CLIENT_ID_DEFAULT), CLIENT_ID_DEFAULT
+    if not is_valid_client_id(requested_cid): return connect_discord_core(CLIENT_ID_DEFAULT), CLIENT_ID_DEFAULT
     rpc = connect_discord_core(requested_cid)
     if rpc: return rpc, requested_cid
     return connect_discord_core(CLIENT_ID_DEFAULT), CLIENT_ID_DEFAULT
@@ -737,26 +755,20 @@ def extract_main_artist(raw_artist):
     parts = re.split(r'[;/,]| & | feat\. | ft\. | vs\. ', raw_artist, flags=re.IGNORECASE)
     return parts[0].strip()
 
-# --- TEXT FORMATTING ---
 def format_rpc_text(json_field, cfg_option, show_mode, info_dict, custom_data):
-    if show_mode == "never": return None
-
+    invisible_text = "\u200b\u200b"
+    if show_mode == "never": return invisible_text
     if cfg_option != "custom":
         mapped_artist = _('by_artist').replace("{artist}", info_dict['artist'])
         map_dict = {
-            "title": info_dict['title'], 
-            "artist": mapped_artist, 
-            "album": info_dict['album'], 
-            "aimp": "AIMP"
+            "title": info_dict['title'], "artist": mapped_artist,
+            "album": info_dict['album'], "aimp": "AIMP"
         }
         final_text = map_dict.get(cfg_option, "AIMP")
     else:
         items = custom_data.get(json_field, [])
-        if not items: return None
-        
-        if isinstance(items[0], str):
-            idx = int(time.time() / 15) % len(items)
-            chosen_text = str(items[idx])
+        if not items: return invisible_text
+        if isinstance(items[0], str): idx = int(time.time() / 15) % len(items); chosen_text = str(items[idx])
         else:
             total_time = sum(max(1, i.get("time", 5)) for i in items)
             c_mod = time.time() % total_time
@@ -767,22 +779,74 @@ def format_rpc_text(json_field, cfg_option, show_mode, info_dict, custom_data):
                 if c_mod < acc:
                     chosen_text = i.get("text", "")
                     break
-        
-        chosen_text = chosen_text.replace("{title}", info_dict['title'])
-        chosen_text = chosen_text.replace("{artist}", info_dict['artist'])
-        chosen_text = chosen_text.replace("{album}", info_dict['album'])
+        chosen_text = chosen_text.replace("{title}", info_dict['title']).replace("{artist}", info_dict['artist']).replace("{album}", info_dict['album'])
         final_text = chosen_text
 
-    if not final_text or not str(final_text).strip(): return None
-
+    if not final_text or not str(final_text).strip(): return invisible_text
     if show_mode == "auto":
-        empty_filters = [_("unknown_track"), _("unknown_artist"), _("unknown_album"), "Sencillo/Desconocido", "Artista Desconocido", "Pista Desconocida"]
+        empty_filters = [_("unknown_track"), _("unknown_artist"), _("unknown_album"), "Unknown Single/Album", "Unknown Artist", "Unknown Track"]
         for f in empty_filters:
-            if f in final_text: return None
-
+            if f in final_text: return invisible_text
     return final_text
 
-# --- IMAGE FETCHING (MUTAGEN & LAST.FM & CACHE) ---
+def format_dynamic_url(template, artist, title, album):
+    if not template: return None
+    res = template.replace("{artist}", urllib.parse.quote(artist)).replace("{title}", urllib.parse.quote(title)).replace("{album}", urllib.parse.quote(album))
+    res = res.replace(" ", "%20")
+    return res
+
+def get_profile_data(track_name, artist, album, file_path):
+    btns_data = load_buttons_config()
+    fallback_name = btns_data.get("fallback_profile", "Default")
+    profiles = btns_data.get("profiles", [])
+    
+    track_lower = track_name.lower()
+    path_lower = str(file_path).lower() if file_path else ""
+    
+    selected_profile = None
+    for p in profiles:
+        match_val = str(p.get("match", "")).lower()
+        if match_val and match_val != "default" and (match_val in track_lower or match_val in path_lower):
+            selected_profile = p
+            break
+            
+    if not selected_profile:
+        for p in profiles:
+            if str(p.get("match", "")) == fallback_name:
+                selected_profile = p
+                break
+                
+    if not selected_profile and profiles:
+        selected_profile = profiles[0]
+
+    final_buttons = []
+    if cfg_buttons_mode == 'default':
+        search_artist = extract_main_artist(artist)
+        q_str = urllib.parse.quote(f"{search_artist} {track_name}")
+        final_buttons = [
+            {"label": "Spotify", "url": f"https://open.spotify.com/search/{q_str}"},
+            {"label": "YouTube", "url": f"https://www.youtube.com/results?search_query={q_str}"}
+        ]
+    else:
+        if selected_profile:
+            for b_key in ["button_1", "button_2"]:
+                b_data = selected_profile.get(b_key, {})
+                label = b_data.get("label", "__disabled__")
+                url = b_data.get("url", "")
+                if label != "__disabled__" and url:
+                    parsed_url = format_dynamic_url(url, artist, track_name, album)
+                    final_buttons.append({"label": label[:32], "url": parsed_url})
+        final_buttons = final_buttons[:2]
+
+    raw_details = selected_profile.get("details_url", "") if selected_profile else ""
+    raw_state = selected_profile.get("state_url", "") if selected_profile else ""
+    raw_large = selected_profile.get("large_url", "default") if selected_profile else "default"
+
+    parsed_details_url = format_dynamic_url(raw_details, artist, track_name, album)
+    parsed_state_url = format_dynamic_url(raw_state, artist, track_name, album)
+
+    return final_buttons, parsed_details_url, parsed_state_url, raw_large
+
 def fetch_lastfm_cover(artist, track, album_name):
     track_clean = track.replace(".flac", "").replace(".mp3", "").strip()
     album_target = album_name.lower().strip() if album_name else ""
@@ -794,7 +858,7 @@ def fetch_lastfm_cover(artist, track, album_name):
             if img and (data['track']['album'].get('title', "").lower().strip() == album_target or album_target in ["", "album", _("unknown_album").lower()]): return img
     except: pass
     try:
-        if album_target and album_target not in ["", "album", _("unknown_album").lower(), "sencillo/desconocido"]:
+        if album_target and album_target not in ["", "album", _("unknown_album").lower(), "unknown single/album"]:
             url_album = f"http://ws.audioscrobbler.com/2.0/?method=album.getInfo&api_key={api_key_lastfm}&artist={urllib.parse.quote(artist)}&album={urllib.parse.quote(album_name)}&format=json"
             data_album = http_session.get(url_album, timeout=5).json()
             if 'album' in data_album:
@@ -809,7 +873,7 @@ def extract_local_cover(file_path):
         audio = File(file_path)
         if not audio: return None
         if hasattr(audio, 'pictures') and audio.pictures: return audio.pictures[0].data
-        if "covr" in audio: 
+        if "covr" in audio:
             covr_data = audio["covr"][0]
             return covr_data if isinstance(covr_data, bytes) else bytes(covr_data)
         tags = getattr(audio, 'tags', audio)
@@ -830,55 +894,66 @@ def upload_to_imgbb(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes))
         if img.mode != 'RGB': img = img.convert('RGB')
-        img.thumbnail((512, 512), Image.Resampling.LANCZOS) 
+        img.thumbnail((512, 512), Image.Resampling.LANCZOS)
         output = io.BytesIO()
         img.save(output, format='JPEG', quality=85)
-        
-        # Elegir una API key aleatoria del pool descargado de GitHub
         selected_key = random.choice(imgbb_api_keys)
-        
         response = http_session.post("https://api.imgbb.com/1/upload", data={"key": selected_key, "expiration": 604800}, files={"image": ("cover.jpg", output.getvalue(), "image/jpeg")}, timeout=10)
-        
-        if response.status_code == 200 and response.json().get("success"): 
-            return response.json()["data"]["url"]
-        else:
-            logger(f"ImgBB upload error with key {selected_key[:4]}... -> Code: {response.status_code}")
-    except Exception as e: 
-        logger(f"ImgBB exception: {e}")
+        if response.status_code == 200 and response.json().get("success"): return response.json()["data"]["url"]
+        else: logger(f"ImgBB upload error with key {selected_key[:4]}... -> Code: {response.status_code}")
+    except Exception as e: logger(f"ImgBB exception: {e}")
     return None
+
+def upload_to_litterbox(img_bytes):
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        if img.mode != 'RGB': img = img.convert('RGB')
+        img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=85)
+        url = "https://litterbox.catbox.moe/resources/internals/api.php"
+        data = {'reqtype': 'fileupload', 'time': '72h'}
+        files = {'fileToUpload': ('cover.jpg', output.getvalue(), 'image/jpeg')}
+        response = http_session.post(url, data=data, files=files, timeout=10)
+        if response.status_code == 200 and response.text.startswith("https://"): return response.text.strip()
+        else: logger(f"Litterbox API Error - Code {response.status_code}")
+    except Exception as e: logger(f"Litterbox exception: {e}")
+    return None
+
+def process_and_upload_cover(img_bytes):
+    litterbox_url = upload_to_litterbox(img_bytes)
+    if litterbox_url: return litterbox_url
+    logger("Litterbox is not responding. Activating emergency ImgBB service as automatic backup...")
+    global imgbb_keys_fetched
+    if not imgbb_keys_fetched:
+        logger("Downloading ImgBB configuration to enable it in the current session...")
+        fetch_imgbb_keys()
+    return upload_to_imgbb(img_bytes)
 
 force_cover_update = False
 cover_thread_counter = 0
 
 def async_cover_search(raw_artist, target_track, target_album, file_path, source_cfg, fallback_img, thread_id):
     global current_cover, force_cover_update, global_covers_cache, cover_thread_counter
-    
     if thread_id != cover_thread_counter: return
 
     final_url = fallback_img
     main_artist = extract_main_artist(raw_artist)
-
     clean_album = target_album.lower().strip()
-    is_unknown_album = clean_album in ["", "album", _("unknown_album").lower(), "sencillo/desconocido", "unknown single/album"]
+    is_unknown_album = clean_album in ["", "album", _("unknown_album").lower(), "unknown single/album"]
     db_key = f"{main_artist} - {target_track}" if is_unknown_album else f"{main_artist} - {target_album}"
 
     if db_key in global_covers_cache:
         cached_url = global_covers_cache[db_key]
-        
         if thread_id == cover_thread_counter:
             current_cover = cached_url
             force_cover_update = True
-            
         link_dead = False
         try:
             test_resp = http_session.head(cached_url, timeout=2.5)
-            if test_resp.status_code == 404:
-                link_dead = True
-        except:
-            pass 
-            
-        if not link_dead:
-            return
+            if test_resp.status_code == 404: link_dead = True
+        except: pass
+        if not link_dead: return
         else:
             logger(f"Expired link detected for '{db_key}'. Removing from DB to re-upload.")
             del global_covers_cache[db_key]
@@ -896,9 +971,9 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
         if file_path and os.path.exists(file_path):
             img_bytes = extract_local_cover(file_path)
             if img_bytes:
-                if thread_id != cover_thread_counter: return None 
-                url_imgbb = upload_to_imgbb(img_bytes)
-                if url_imgbb: return url_imgbb
+                if thread_id != cover_thread_counter: return None
+                url_uploaded = process_and_upload_cover(img_bytes)
+                if url_uploaded: return url_uploaded
         return None
 
     if source_cfg == "file": final_url = try_file() or fallback_img
@@ -910,12 +985,18 @@ def async_cover_search(raw_artist, target_track, target_album, file_path, source
     if final_url != fallback_img:
         global_covers_cache[db_key] = final_url
         threading.Thread(target=push_covers_db, daemon=True).start()
+        try:
+            http_session.head(final_url, timeout=2)
+            time.sleep(1.8)
+        except: pass
+
+    if thread_id != cover_thread_counter: return
 
     if target_track == last_rpc_song:
-        current_cover = final_url
+        if final_url != fallback_img: current_cover = f"{final_url}?v={int(time.time())}"
+        else: current_cover = final_url
         force_cover_update = True
 
-# --- MAIN EXECUTION ---
 icon.run_detached()
 
 last_resolved_theme = ""
@@ -930,11 +1011,10 @@ last_discord_song = ""
 last_playback_state = None
 last_aimp_pos = 0
 current_cover = "logo"
-last_discord_update = time.time() 
+last_discord_update = time.time()
 last_evaluated_texts = ("", "", "", "")
 last_config_state = get_config_state_tuple()
 
-# VARIABLES PARA EL FIX DE LA LÍNEA DE TIEMPO
 last_v_start = None
 last_v_end = None
 
@@ -947,7 +1027,7 @@ while is_running:
         aimp_connected = True
 
     try:
-        aimp.detect_aimp() 
+        aimp.detect_aimp()
         p_state = aimp.get_playback_state()
         info = aimp.get_current_track_info()
         live_custom_data = load_custom_texts()
@@ -963,12 +1043,12 @@ while is_running:
             
             if resolved_theme_name != last_resolved_theme:
                 last_resolved_theme = resolved_theme_name
-                last_rpc_song = "" 
+                last_rpc_song = ""
                 if processed_req_id != active_client_id and discord_connected:
                     if RPC:
-                        try: RPC.clear(); RPC.close() 
+                        try: RPC.clear(); RPC.close()
                         except: pass
-                    discord_connected = False 
+                    discord_connected = False
 
             if not discord_connected:
                 new_rpc, connected_id = connect_discord_safe(requested_cid)
@@ -976,8 +1056,9 @@ while is_running:
                     RPC = new_rpc
                     active_client_id = connected_id
                     discord_connected = True
-                    last_discord_update = time.time()
+                    last_discord_update = 0
                     last_discord_song = ""
+                    last_rpc_song = ""
                     current_cover = current_theme_data.get("large_image", "logo")
                 else:
                     time.sleep(0.5)
@@ -997,7 +1078,7 @@ while is_running:
                     try: RPC.clear()
                     except: pass
                     last_playback_state = PlayBackState.Stopped
-                    last_discord_song = "" 
+                    last_discord_song = ""
                 last_config_state = current_config_state
                 time.sleep(0.5)
                 continue
@@ -1017,38 +1098,22 @@ while is_running:
                     threading.Thread(target=async_cover_search, args=(artist_name, track_name, album_name, file_path, cfg_cover_source, theme_fallback_img, cover_thread_counter), daemon=True).start()
                 else: force_cover_update = True
 
-            # --- FIX: CÁLCULO ESTABLE DE LÍNEA DE TIEMPO Y PREVENCIÓN DE CARRERAS ---
             if p_state == PlayBackState.Playing:
-                # Si cambió la canción pero la posición reportada sigue siendo alta, es el residuo
-                # de la canción anterior que AIMP no limpió a tiempo en su API. Lo forzamos a 0.
-                if track_name != last_discord_song and last_discord_song != "" and pos_sec > 3:
-                    pos_sec = 0
-
-                # Doble seguridad para evitar que la posición supere la duración máxima
-                if duration_sec > 0 and pos_sec > duration_sec:
-                    pos_sec = duration_sec
+                if track_name != last_discord_song and last_discord_song != "" and pos_sec > 3: pos_sec = 0
+                if duration_sec > 0 and pos_sec > duration_sec: pos_sec = duration_sec
 
                 current_v_start = int(time.time()) - pos_sec
                 current_v_end = current_v_start + duration_sec
                 
-                # Si es una nueva canción, reanuda, o detecta que adelantaste (diferencia mayor a 2s)
                 if track_name != last_discord_song or p_state != last_playback_state or last_v_start is None or abs(current_v_start - last_v_start) > 2:
-                    last_v_start = current_v_start
-                    last_v_end = current_v_end
-                    did_seek = True 
-                else:
-                    did_seek = False
+                    last_v_start = current_v_start; last_v_end = current_v_end; did_seek = True
+                else: did_seek = False
 
-                v_start = last_v_start
-                v_end = last_v_end
-                v_small_icon = current_theme_data.get("small_play", "play")
-                v_txt_state = _('status_playing')
+                v_start = last_v_start; v_end = last_v_end
+                v_small_icon = current_theme_data.get("small_play", "play"); v_txt_state = _('status_playing')
             else:
-                v_start = None; v_end = None
-                last_v_start = None; last_v_end = None # Reseteamos al pausar
-                did_seek = False
-                v_small_icon = current_theme_data.get("small_pause", "pause")
-                v_txt_state = _('status_paused')
+                v_start = None; v_end = None; last_v_start = None; last_v_end = None; did_seek = False
+                v_small_icon = current_theme_data.get("small_pause", "pause"); v_txt_state = _('status_paused')
 
             dict_info = {"title": track_name, "artist": artist_name, "album": album_name}
             
@@ -1064,7 +1129,7 @@ while is_running:
 
             current_texts = (t_name, t_details, t_state, t_large)
             texts_rotated = current_texts != last_evaluated_texts
-            force_timer = (time.time() - last_discord_update) > 5
+            force_timer = (time.time() - last_discord_update) > 15
 
             type_display = StatusDisplayType.DETAILS
             status_mode = cfg_status_display
@@ -1072,8 +1137,7 @@ while is_running:
             if status_mode == 'custom':
                 fl_items = live_custom_data.get("friend_list", [])
                 if fl_items:
-                    if isinstance(fl_items[0], str): 
-                        status_str = fl_items[int(time.time() / 15) % len(fl_items)]
+                    if isinstance(fl_items[0], str): status_str = fl_items[int(time.time() / 15) % len(fl_items)]
                     else:
                         tot_t = sum(max(1, i.get("time", 10)) for i in fl_items)
                         c_mod = time.time() % tot_t
@@ -1098,56 +1162,53 @@ while is_running:
                 if cfg_icon_state == "logo": s_img = theme_fallback_img; s_txt = "AIMP"
                 elif cfg_icon_state == "none": s_img = None; s_txt = None
                 else: s_img = v_small_icon; s_txt = v_txt_state
-
-                search_artist = extract_main_artist(artist_name)
-                q_str = urllib.parse.quote(f"{search_artist} {track_name}")
+                
+                active_buttons, parsed_details_url, parsed_state_url, raw_large_url = get_profile_data(track_name, artist_name, album_name, file_path)
+                
+                if raw_large_url and raw_large_url.lower() == "default":
+                    parsed_large_url = img_send if (img_send and img_send.startswith("http")) else None
+                elif raw_large_url:
+                    parsed_large_url = format_dynamic_url(raw_large_url, artist_name, track_name, album_name)
+                else:
+                    parsed_large_url = None
                 
                 try:
-                    if track_name != last_discord_song:
-                        logger(f"Activity Updated -> {track_name} by {artist_name} | Path: {file_path}")
+                    if track_name != last_discord_song: logger(f"Activity Updated -> {track_name} by {artist_name} | Path: {file_path}")
 
                     RPC.update(
-                        name=t_name[:128] if t_name else None, 
-                        details=t_details[:128] if t_details else None, 
-                        state=t_state[:128] if t_state else None, 
-                        large_image=img_send, large_text=t_large[:128] if t_large else None, 
+                        name=t_name[:128] if t_name else None,
+                        details=t_details[:128] if t_details else None,
+                        details_url=parsed_details_url if t_details else None,
+                        state=t_state[:128] if t_state else None,
+                        state_url=parsed_state_url if t_state else None,
+                        large_image=img_send, large_text=t_large[:128] if t_large else None,
+                        large_url=parsed_large_url if t_large else None,
                         small_image=s_img, small_text=s_txt,
                         start=time_start, end=time_end,
-                        buttons=[{"label": "Spotify", "url": f"https://open.spotify.com/search/{q_str}"}, {"label": "YouTube", "url": f"https://www.youtube.com/results?search_query={q_str}"}],
+                        buttons=active_buttons if active_buttons else None,
                         activity_type=ActivityType.LISTENING, status_display_type=type_display
                     )
-                    last_discord_song = track_name
-                    last_playback_state = p_state
-                    last_discord_update = time.time()
-                    last_config_state = current_config_state
-                    last_evaluated_texts = current_texts
-                    force_cover_update = False 
-                    
-                except Exception:
-                    discord_connected = False
-                    last_playback_state = None 
-                
-            last_aimp_pos = pos_sec
-        else:
-            if last_playback_state != PlayBackState.Stopped:
-                aimp.detect_aimp() 
+
+                    last_discord_song = track_name; last_playback_state = p_state
+                    last_discord_update = time.time(); last_config_state = current_config_state
+                    force_cover_update = False; last_evaluated_texts = current_texts
+                except Exception as e:
+                    logger(f"Discord update error: {e}")
+                    RPC = None; discord_connected = False; last_rpc_song = ""
+        
+        elif (not info or p_state == PlayBackState.Stopped) and discord_connected:
+            if last_playback_state != PlayBackState.Stopped or config_changed:
                 try: RPC.clear()
                 except: pass
-                last_rpc_song = ""
-                last_discord_song = ""
                 last_playback_state = PlayBackState.Stopped
-
-    except (RuntimeError, Exception):
+                last_discord_song = ""; last_rpc_song = ""; last_config_state = current_config_state
+        
+    except Exception as e:
+        logger(f"Primary loop exception: {e}")
         aimp_connected = False
-        last_rpc_song = ""
-        last_discord_song = ""
-        last_playback_state = None
-        try: RPC.clear()
-        except: pass
+        if RPC:
+            try: RPC.clear()
+            except: pass
+        RPC = None; discord_connected = False; last_rpc_song = ""
     
     time.sleep(0.5)
-
-if RPC:
-    try: RPC.clear(); RPC.close()
-    except: pass
-sys.exit(0)
