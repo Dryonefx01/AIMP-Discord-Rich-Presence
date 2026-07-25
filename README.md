@@ -114,14 +114,20 @@ This file allows you to create custom profiles for the buttons displayed on your
 **Example:**
 ```json
 {
-    "My Search Profile": [
+   "profiles": [
         {
-            "label": "Search {artist} on Spotify",
-            "url": "https://open.spotify.com/search/{artist}"
-        },
-        {
-            "label": "Find {title} on YouTube",
-            "url": "https://www.youtube.com/results?search_query={artist}+{title}"
+            "match": "Default" / "C:\Users\DryoneFX\Music\Music\Musica 4K\Modern\Avril Lavigne - Alice.flac",
+            "button_1": {
+                "label": "Spotify",
+                "url": "https://open.spotify.com/search/{artist}%20{title}"
+            },
+            "button_2": {
+                "label": "__disabled__",
+                "url": "https://www.youtube.com/results?search_query={artist}%20{title}"
+            },
+            "details_url": "https://www.youtube.com/results?search_query={artist}%20{title}" / "https://www.youtube.com/watch?v=op2bcqpLI8Q",
+            "state_url": "https://open.spotify.com/search/{artist}%20{title}",
+            "large_url": "default" / "(Any Link)"
         }
     ]
 }
