@@ -166,11 +166,11 @@ This file is the core of the **Theme Engine**. It allows you to define exactly w
 ```json
 [
     {
-        "name": "Synthwave Theme",
+        "name": "Blue_Blight",
         "client_id": "default",
-        "large_image": "https://i.imgur.com/your_animated_synthwave.gif",
-        "small_play": "https://i.imgur.com/custom_play_icon.png",
-        "small_pause": "https://i.imgur.com/custom_pause_icon.png"
+        "large_image": "logo",
+        "small_play": "https://cdn.pixabay.com/animation/2025/07/26/21/49/21-49-36-713_512.gif",
+        "small_pause": "https://cdn.pixabay.com/animation/2024/03/07/22/53/22-53-12-54_256.gif"
     }
 ]
 ```
@@ -191,7 +191,6 @@ Want your theme to change based on what you are listening to? This file handles 
 {
     "fallback_theme": "Default Dark",
     "timer_rotation_enabled": false,
-    "timer_rotation": [],
     "file_rules": [
         {
             "match": "C:\Music\Vocaloid",
@@ -200,6 +199,12 @@ Want your theme to change based on what you are listening to? This file handles 
         {
             "match": "OST",
             "theme": "__AUTOMATIC__"
+        }
+    ],
+    "timer_rotation": [
+        {
+            "theme": "Default (AIMP)",
+            "time": 3600
         }
     ]
 }
