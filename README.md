@@ -2,7 +2,7 @@
 
 Elevate your Discord profile by seamlessly syncing your AIMP music player activity in real-time.  
 <p align="center" autoplay>
-  <video src="https://github.com/user-attachments/assets/5b45f4fe-ba8a-4cc0-9085-71a40194643e" width="100%" style="max-width: 480px; aspect-ratio: 480/270;">
+  <video src="https://github.com/user-attachments/assets/8d62dc8a-0c94-4c77-8ebb-afa255edcae7" width="100%" style="max-width: 480px; aspect-ratio: 480/270;">
   </video>
 </p>
  
