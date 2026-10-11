@@ -1,7 +1,11 @@
 # AIMP Discord Rich Presence Bridge <img width="38" height="38" alt="Sin título" src="https://github.com/user-attachments/assets/2d9d86d0-f60a-4fd0-999a-b6a933a13869" />
 
-Elevate your Discord profile by seamlessly syncing your AIMP music player activity in real-time. 
-
+Elevate your Discord profile by seamlessly syncing your AIMP music player activity in real-time.  
+<p align="center" autoplay>
+  <video src="https://github.com/user-attachments/assets/5b45f4fe-ba8a-4cc0-9085-71a40194643e" width="100%" style="max-width: 480px; aspect-ratio: 480/270;">
+  </video>
+</p>
+ 
 This standalone Python application acts as a bridge between AIMP and Discord, providing a highly customizable Rich Presence experience. It goes beyond simple playback status by allowing you to display album art, track timelines, dynamic status icons, custom animated themes, and clickable buttons directly on your Discord profile.
 
 <img width="480" height="270" alt="Activity" src="https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExNmFoMGJ2Znh4bjI0cXZoYTluNHYxN3p4aGYyZTF3MTU3ZjQ0NHV1NSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/Ex1VZrDUZaxmmWZiBH/giphy.gif" />
